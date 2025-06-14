@@ -1,0 +1,162 @@
+start:
+  position: -101
+  type: image
+  
+beam_shaper:
+  position: -100
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 8
+  size: 1.0e-3 #diameter
+
+CRL3:
+  position: -9
+  type: lens_reg
+  in: 1
+  num_lenses: 13
+  f: 9.750
+  size: 2.0e-3 #diameter
+  
+O1:
+  position: -7.2
+  elem: W
+  in: 1
+  shape: realwire
+  size: 244.62e-6 #diameter
+  type: aperture
+  #defect_type: sine
+  #defect_lambda: 1.9999999999999998e-05
+  #defect_amplitude: 2.0e-06
+  
+L1:
+  position: -1.2
+  type: CRL4_lens_reg
+  in: 1
+  num_lenses: 13
+  f: 3.12
+  size: 0.0006
+
+O2:
+  position: -1.0
+  elem: W
+  in: 0
+  shape: realwire
+  size: 60.0e-6
+  type: aperture
+  #defect_type: sine
+  #defect_lambda: 2.02e-05
+  #defect_amplitude: 2.0e-06
+  
+dereg1:
+  position: -1.1
+  type: dereg
+  plot: 1
+
+PH:
+  in: 0
+  position: -0.15
+  size: 80.0e-6
+  invert: 1
+  elem: Au
+  thickness: 2.0e-05
+  zoom: 1
+  type: aperture
+  shape: circle
+
+TCC:
+  type: imager
+  position: 0
+
+reg1:
+  position: 1.5
+  type: reg
+  plot: 0
+
+A1-:
+  position: 6.45
+  type: imager
+
+A1:
+  in: 1
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 169.0e-6
+  position: 6.5
+  type: aperture
+  defect_type: sawtooth
+  defect_lambda: 20.0e-6
+  defect_amplitude: 40.e-6
+
+L2:
+  position: 6.8
+  f: 2.45
+  type: CRL4_lens_reg
+  size: 600.0e-6
+  num_lenses: 6
+A2:
+  in: 0
+  position: 10
+  r: 0.0002
+  shape: wireslit
+  size: 7.500000000000001e-06
+  type: aperture
+  elem: W
+  #defect_type: sine
+  #defect_lambda: 2.06e-05
+  #defect_amplitude: 2.0e-06
+dereg2:
+  position: 15
+  type: dereg
+  plot: 0
+Det:
+  position: 15.0
+  type: imager
+  roi: 13
+  roi2: 75
+beam:
+  offset: 0
+  size: 2.25e-3
+  photonenergy: 8766
+simulation: #parameters below are stocked in "params"
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 5.0e-3
+  
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save: ['CRL1','PH','Det','A1','TCC','flow']
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -12.0
+  - 15
+  - 0.03
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -225.0
+  - 225.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
+#meta:
+#  wide_factor: 1.5

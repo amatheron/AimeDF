@@ -1,0 +1,19 @@
+# Ignore temporary and heavy files
+*.pyc
+__pycache__/
+*.log
+*.png
+*.tiff
+*.sif
+*.h5
+*.pickle
+*.pkl
+*.npy
+*.npz
+*.mat
+.DS_Store
+
+# Ignore output folders
+flow_figs/
+bash_output/
+running/

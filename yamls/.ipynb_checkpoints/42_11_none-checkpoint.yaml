@@ -1,0 +1,138 @@
+start:
+  position: -3
+  type: image
+beam_shaper:
+  position: -2
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 8
+  size: 400.e-6
+O1:
+  position: -1.142
+  elem: W
+  in: 1
+  shape: realwire
+  size: 0.00018
+  type: aperture
+L1:
+  position: -0.428
+  type: lens_reg
+  in: 1
+  num_lenses: 6
+  f: 0.428
+  size: 0.0004
+  celestre: 0
+  seiboth: 0
+  scatterer: 0
+  scatterer_k: 0.023
+O2:
+  position: -0.375
+  elem: W
+  in: 1
+  shape: realwire
+  size: 0.00016
+  type: aperture
+PH:
+  in: 1
+  position: -0.0
+  size: 7.999999999999999e-05
+  invert: 1
+  elem: Au
+  thickness: 4.0e-05
+  zoom: 5
+  type: aperture
+  shape: circle
+dereg1:
+  position: -0.08
+  type: dereg
+  plot: 1
+TCC:
+  type: imager
+  position: 0
+  zoom: 10
+reg1:
+  position: 0.08
+  type: reg
+  plot: 0
+A1-:
+  position: 0.77
+  type: imager
+A1:
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 0.00014
+  position: 0.775
+  type: aperture
+  in: 1
+L2:
+  position: 1.27
+  f: 1.0
+  type: CRL4_lens_reg
+  size: 0.0028
+  num_lenses: 6
+  celestre: 0
+  seiboth: 0
+  scatterer: 0
+  scatterer_k: 0.023
+  plot: 0
+A2:
+  position: 3.3
+  r: 0.0002
+  shape: wireslit
+  size: 0.00010
+  type: aperture
+  elem: W
+dereg2:
+  position: 5.5
+  type: dereg
+  plot: 1
+Det:
+  position: 6.0
+  type: imager
+  roi: 13.5
+  roi2: 75
+beam:
+  offset: 0
+  size: 0.001
+  photonenergy: 8766
+simulation:
+  N_negative: 8000
+  N_positive: 8000
+  N_squeezed: 0
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  smooth: 0
+  subfigure_size_px: 900
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -1.2
+  - 6
+  - 0.1
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -50.0
+  - 150.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
+meta:
+  wide_factor: 1.0

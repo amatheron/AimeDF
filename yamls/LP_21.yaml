@@ -1,0 +1,221 @@
+start: #name = just the name on the figure.
+    position: -1.142
+    type: image
+
+O1:
+    position: -1.142
+    elem: W
+    in: true
+    shape: realwire
+    size: 0.000180
+    type: aperture
+    # defect_type: sawtooth
+    # defect_lambda: 20.e-6
+    # defect_amplitude: 2.e-6
+
+CRL1:
+    position: -0.428
+    type: ideal_lens_reg
+    in: 1
+    f: 0.428
+
+phase_def:
+    type: phaseplate
+    defect: celestre
+    num: 10
+    position: -0.427
+
+
+aper1:
+    position: -0.426
+    in: 1
+    size: 400.e-6
+    shape: circle
+    thickness: 100.e-6
+    elem: Hf
+    invert: 1
+    type: aperture
+    plot: True
+
+CRL_abs:
+    type: aperture
+    shape: parabolic_lens
+    defect: celestre
+    size: 300.e-6 # 400e-6 original
+    roc: 50.e-6
+    double_sided: 1
+    num_lenses: 13
+    elem: Be
+    position: -0.425
+    minr0: 0
+    do_phaseshift: 0
+    in: 1
+
+O2:
+    elem: W
+    in: true
+    shape: realwire
+    size: 0.000160
+    position: -0.375
+    type: aperture
+
+PH:
+    in: true
+    #position: -30.e-3
+    position: -1.e-3
+    size: 80.e-6
+    invert: 1
+    elem: W
+    thickness: 400.e-6
+    zoom: 1
+    type: aperture
+    shape: circle 
+
+
+dereg1:
+    position: -29.999e-3
+    type: dereg
+    #PH is at -30mm (good point for dereguralization)
+    #the elements must be a little further than PH (otherwise it doesnt work)
+
+TCC:
+    position: 0.0
+    size: 50.
+    power: 2
+    invert: 0
+    zoom: 10
+    type: aperture
+    shape: gaussian
+    do_phaseshift: 0
+
+prop:
+    position: 30.e-3
+    type: just_propagate
+    plot: False
+#    Elements.append([+30*mm,'just_propagate']) #propagate to regularization point
+
+reg1:
+    position: 30.000001e-3
+    type: reg
+    plot: True
+    #Elements.append([+30.000001*mm,'reg']) #regularize
+
+
+A1-:
+    position: 0.77699
+    position: 0.3
+    type: imager
+
+imager:
+    position: 1.
+    type: imager
+
+A1:
+    elem: W
+    mult: 0.4
+    #r: 0.0002 #this is for wireslit
+    d: 100 #this is for linearslit
+    l: 600 #this is for linearslit
+    shape: linearslit
+    size: 140.e-06
+    #defect_type: sawtooth
+    #defect_lambda: 5.e-6
+    #defect_amplitude: 1.e-6
+    position: 0.777
+    type: aperture
+    
+
+
+CRL2:
+    position: 1.132
+    type: ideal_lens_reg
+    f: 0.916
+
+ap2:
+    position: 1.133
+    in: 1
+    size: 400.e-6 # 400 original
+    shape: circle
+    thickness: 100.e-6
+    elem: Hf
+    invert: 1
+    type: aperture
+    plot: True
+
+CRL_abs2:
+    type: aperture
+    shape: parabolic_lens
+    defect: celestre
+    size: 400.e-6 # 400 og
+    roc: 50.e-6
+    double_sided: 1
+    num_lenses: 6
+    elem: Be
+    position: -0.425
+    minr0: 0
+    do_phaseshift: 0
+    in: 1
+
+
+A2:
+    position: 3.330
+    mult: 0.4
+    r: 0.0002
+    shape: wireslit
+    size: 100.0e-6
+    type: aperture
+    elem: W
+    A2pp_in: false
+    # rot: 45
+# YAG2:
+#     position: 5.5
+#     type: imager_off
+
+# prop2:
+#     position: 5.2  #    Elements.append([+5700*mm,'just_propagate']) #propagate to deregularization point
+#     type: just_propagate
+#     plot: True
+
+# dereg2:
+#     position: 5.20001
+#     type: dereg
+#     plot: True
+
+
+Det:
+    position: 5.945
+    position: 5.8
+    type: imager
+    roi2: 13
+    #roi: 30
+    roi: 75
+    #roi: 6.5 # this is in um? not the rest
+
+beam:
+    offset: 0
+    size: 390e-6
+    photonenergy: 8766
+
+simulation:
+    do_positive: true
+    focus_test: false
+    focus_test_zoom: 150
+    name: as_filename
+    pptype: N
+    project: Aime
+    propsize: 1500.e-6 #
+    smooth: 0
+    subfigure_size_px: 1500 #300
+    version: 1
+    intensity_ylim: [1.e-13, 2.]
+    profiles_xlim: [0, 200]
+    edge_damping: [0.25]
+    edge_damping_shape: circular
+    flow:
+    - -1.2
+    - 6
+    - 0.03
+    flow_auto_save: 0
+    flow_plot_gyax: [-200,100,1]
+    flow_plot_clim: [1e-11, 50]
+    figs_to_save: ['CRL1','PH','Det','A1','TCC','flow']

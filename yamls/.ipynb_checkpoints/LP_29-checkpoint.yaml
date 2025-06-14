@@ -1,0 +1,140 @@
+start:
+  position: -101
+  type: image
+beam_shaper:
+  position: -100
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 8
+  size: 0.00018
+O1:
+  position: -3
+  elem: W
+  in: 1
+  shape: realwire
+  size: 4.5e-05
+  type: aperture
+  defect_type: sine
+  defect_lambda: 1.9999999999999998e-05
+  defect_amplitude: 2.0e-06
+L1:
+  position: -1.2
+  type: lens_reg
+  in: 1
+  num_lenses: 1
+  f: 1.2
+  size: 0.0006000000000000001
+O2:
+  position: -1.0
+  elem: W
+  in: 0
+  shape: realwire
+  size: 3.0000000000000004e-05
+  type: aperture
+  defect_type: sine
+  defect_lambda: 2.02e-05
+  defect_amplitude: 2.0e-06
+PH:
+  in: 0
+  position: -0.15
+  size: 1.0
+  invert: 1
+  elem: Au
+  thickness: 2.0e-05
+  zoom: 1
+  type: aperture
+  shape: circle
+dereg1:
+  position: -0.5
+  type: dereg
+  plot: 1
+TCC:
+  type: imager
+  position: 0
+reg1:
+  position: 0.5
+  type: reg
+  plot: 0
+A1-:
+  position: 2.4
+  type: imager
+A1:
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 2.25e-05
+  position: 2.5
+  type: aperture
+  in: 1
+  defect_type: sine
+  defect_lambda: 2.0399999999999998e-05
+  defect_amplitude: 2.0e-06
+L2:
+  position: 3
+  f: 2.0
+  type: CRL4_lens_reg
+  size: 0.0006000000000000001
+  num_lenses: 4
+A2:
+  position: 7.0
+  r: 0.0002
+  shape: wireslit
+  size: 7.500000000000001e-06
+  type: aperture
+  elem: W
+  defect_type: sine
+  defect_lambda: 2.06e-05
+  defect_amplitude: 2.0e-06
+dereg2:
+  position: 7
+  type: dereg
+  plot: 0
+Det:
+  position: 9.0
+  type: imager
+  roi: 13.5
+  roi2: 75
+beam:
+  offset: 0
+  size: 0.0022500000000000003
+  photonenergy: 8766
+simulation:
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: 33_double-imaging
+  propsize: 0.0012000000000000001
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -3.5
+  - 9
+  - 0.03
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -75.0
+  - 225.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50

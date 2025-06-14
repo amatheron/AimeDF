@@ -1,0 +1,134 @@
+start:
+  position: -1.142
+  type: image
+beam_shaper:
+  position: -100
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 8
+  size: 0.00018
+O1:
+  position: -1.142
+  elem: W
+  in: 1
+  shape: realwire
+  size: 0.00018
+  type: aperture
+L1:
+  position: -0.428
+  type: CRL4_lens_reg
+  in: 1
+  num_lenses: 10
+  f: 0.428
+  size: 0.0004
+O2:
+  position: -0.375
+  elem: W
+  in: 1
+  shape: realwire
+  size: 1.9999999999999998e-05
+  type: aperture
+PH:
+  in: 1
+  position: -0.001
+  size: 8.0e-05
+  invert: 1
+  elem: W
+  thickness: 0.0004
+  zoom: 1
+  type: aperture
+  shape: circle
+dereg1:
+  position: -0.05
+  type: dereg
+  plot: 1
+TCC:
+  type: imager
+  position: 0
+reg1:
+  position: 0.05
+  type: reg
+  plot: 0
+A1-:
+  position: 0.3
+  type: imager
+A1:
+  in: 1
+  elem: W
+  d: 100
+  l: 600
+  shape: linearslit
+  size: 0.00014
+  position: 0.777
+  type: aperture
+L2:
+  position: 1.132
+  f: 0.916
+  type: CRL4_lens_reg
+  size: 0.0004
+  num_lenses: 6
+A2:
+  position: 3.33
+  r: 0.0002
+  shape: wireslit
+  size: 0.0001
+  type: aperture
+  elem: W
+dereg2:
+  position: 4.8
+  type: dereg
+  plot: 0
+Det:
+  position: 5.8
+  type: imager
+  roi: 13
+  roi2: 75
+beam:
+  offset: 0
+  size: 390e-6
+  photonenergy: 8766
+simulation:
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.0015
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-13
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - CRL1
+  - PH
+  - Det
+  - A1
+  - TCC
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -1.2
+  - 6
+  - 0.03
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -200.0
+  - 200.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
