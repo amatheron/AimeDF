@@ -16,6 +16,7 @@ import darkfield.mmmUtils_v2 as mu
 import darkfield.regularized_propagation_v2 as rp
 #Simon end----
 HOME = '/home/yu79deg/darkfield_p5438/'
+
 def elem2Z(elem):
     if elem=='Be':   return 4
     if elem=='C':   return 6
@@ -517,15 +518,15 @@ def get_aperture_transmission_map(pars,params=[],debug=0):
 
 def get_aperture_thickness_map(pars,params=[],debug=0):
 
-    typ = pars['shape']
-    pxsize = params['pxsize']
-    N = params['N']
-    N2 = int(N/2)
+    typ=pars['shape']
+    pxsize=params['pxsize']
+    N=params['N']
+    N2=int(N/2)
 
-    Na = (np.arange(N)-N2) * pxsize #list of coordinates in [m], centered around 0.
-    thicknessmap = np.zeros([N,N]) + 1  #that mean default is 1 m thick.
+    Na=(np.arange(N)-N2)*pxsize
+    thicknessmap=np.zeros([N,N])+1  #that mean default is 1 m thick.
 
-    xm,ym = np.meshgrid(Na,Na)
+    xm,ym=np.meshgrid(Na,Na)
     if typ=='circle':
 #            trmap=trmap*0
         r=((xm**2)+(ym**2))**0.5
@@ -580,13 +581,12 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
                 sel=blade>horprof
                 horprof[sel]=blade[sel]
                 thicknessmap[:,i]=horprof
-                
     wls=['realwire','trapez','tent','customwire','pooyan','invpoo','invpar','par','wireslit','linearslit','wire_grating']
 
     if typ in wls :
-        wireprof = get_wire_like_profile(pars,params,debug)
+        wireprof=get_wire_like_profile(pars,params,debug)
 
-        wireprof[np.isnan(wireprof)] = 0
+        wireprof[np.isnan(wireprof)]=0
         if yamlval('smooth',pars)!=0:
             smpx=pars['smooth']/pxsize
             wireprof=mu.convolve_gauss(wireprof,smpx,1)
@@ -628,38 +628,30 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
 
         ones=Na*0+1
         thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
-        
 
-    defect_type = yamlval('defect_type',pars)
-    
-    if defect_type in ['sine', 'sawtooth', 'triangle']: #Adds defects at the edge of apertures
-        wavelength = float(yamlval('defect_lambda', pars))
-        amplitude = float(yamlval('defect_amplitude', pars))
-
-        x = Na * 2 * np.pi / wavelength  # common normalized phase array
-
-        if defect_type == 'sine':
-            offsets_m = np.sin(x) * amplitude
-        elif defect_type == 'sawtooth':
-            offsets_m = signal.sawtooth(x) * amplitude
-        elif defect_type == 'triangle':
-            offsets_m = signal.sawtooth(x, width=0.5) * amplitude
-
+    defect_type=yamlval('defect_type',pars)
+    if defect_type=='sine':
+        l=yamlval('defect_lambda',pars)
+        a=yamlval('defect_amplitude',pars)
+        #offsets=np.sin(Na/(l/2/3.1415))*a # Michal's version
+        x = Na * 2 * np.pi / l
+        offsets=np.sin(x)*a
+        #offsets_px=(np.round(offsets/pxsize))
         offsets_px = np.round(offsets_m / pxsize).astype(int)
+        tmp=thicknessmap*0
+        for yi in np.arange(N):
+            #op=int(offsets_px[yi])
+            op = offsets_px[yi]
+            a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
+            tmp[:,yi]=np.transpose(a)
+        thicknessmap=tmp*1
 
-        tmp = np.zeros_like(thicknessmap)
-        for yi in range(N):
-            tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
-
-        thicknessmap = tmp.copy()
-    
-    #print("thickness map in get_apetture_thickness_map:", thicknessmap)
-    return(thicknessmap)
+    return thicknessmap
 
 
 def get_wire_like_profile(pars,params,debug):
  #realistic wire-like structures
-    r = float(yamlval('size', pars, 0)) / 2
+    r=yamlval('size',pars,0)/2
     off=float(yamlval('offset',pars,0))
     elem=pars['elem']
     pxsize=params['pxsize']
@@ -769,11 +761,11 @@ def get_wire_like_profile(pars,params,debug):
 
     elif typ.find('par')==0:
         l=pars['l']
-        halfsize = float( yamlval('d2',pars,0)/2 )
+        halfsize=yamlval('d2',pars,0)/2
         n=pars['n']
         d=pars['d']
         a=l/(d**n)
-        size = float(yamlval('size',pars,-1))
+        size=yamlval('size',pars,-1)
         if size>0:  #estimating the d2 from effecitve size;
             par=a*np.abs(x-d)**n
             beta,delta,k,thickness_to_phaseshift=get_n(elem,params['photon_energy'])
@@ -901,7 +893,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
         thicknessmap=transmissionmap*0
     else:
         thicknessmap = get_aperture_thickness_map(pars,params,debug)
-        #print("thickness map in doap:", thicknessmap)
 
 
     #General modifications of thickness map
@@ -921,7 +912,13 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             print('Density: ',density)
             print(pars)
             boxsize=params['propsize']
-            numsph=density*boxsize**2/maxsize**2
+            numsph=density*boxsize**2/maxsize**2 
+            #10.6.2025 --formula above was dependent on box size, which is not numerically correct
+            # I'm changing that to the size of the lens.
+            #Density example: I have a size=400μm, spheres with 20μm max. diamter, density 1
+               #  that makes 400 spheres. sounds sane.
+               #If I had k=0.02, and num_lenses=6, then that would make 48 spheres, which is quite noisy
+            numsph=density*pars['size']**2/maxsize**2 
             pxsize=params['pxsize']
 
             for i in np.arange(numsph):
@@ -939,8 +936,8 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             thicknessmap=np.array(thicknessmap)
         else:
             from scipy.ndimage.interpolation import rotate
-            rot_rad=pars['rot']#
-            thicknessmap= rotate(thicknessmap, angle=rot_rad,reshape=0)
+            rot=90-pars['rot']#
+            thicknessmap= rotate(thicknessmap, angle=rot,reshape=0)
         if yamlval('crossed',pars,0):
             thicknessmap2=np.transpose(thicknessmap)
             thicknessmap=thicknessmap2*thicknessmap
@@ -950,8 +947,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
         elem=pars['elem']
 
         beta,delta,k,thickness_to_phaseshift=get_n(elem,E)
-        #print(thicknessmap)
-        print(k)
         transmissionmap=np.exp(-k*thicknessmap)
         phaseshiftmap=thicknessmap*thickness_to_phaseshift
         if debug:
@@ -1033,7 +1028,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             ex=[-mx/um,mx/um,-mx/um,mx/um]
             plt.imshow(phaseshiftmap,extent=ex)
             plt.colorbar()
-        mu.figure()
     if return_thickness:
         return transmissionmap,phaseshiftmap,thicknessmap
     else:
@@ -1041,19 +1035,17 @@ def doap(pars,params=[],debug=0,return_thickness=0):
 
 def prepare_image(img,ps=750,max_pixels=300,ZoomFactor=1,log=1,norms=[0,0],el_dict=None):
     from scipy.interpolate import RegularGridInterpolator
-    # pxc = pixel count : number of pixels in the image.
-    #imgC = image croped : zooomed image
 
     import cv2
-    inte=np.max(img)*ps**2 #Maximum de l'image
-    suma=np.sum(img)*ps**2 #Somme de l'image
-    if np.sum(norms)==0: # First passage in the loop
-        norms[0]=inte # Saves the first value of the integral
-        norms[1]=suma # Saves the first value of the maximum
-    inte=inte/norms[0] #normalize the current value of the integral to the first one in the loop.
-    suma=suma/norms[1] #normalize the current value of the maximum to the first one in the loop.
-    
-    #### First: cut the central region to be shown, a given by zoom factor #####
+    inte=np.max(img)*ps**2
+    suma=np.sum(img)*ps**2
+    if np.sum(norms)==0:
+        norms[0]=inte
+        norms[1]=suma
+    inte=inte/norms[0]
+    suma=suma/norms[1]
+    #First: cut the central region to be shown, a given by zoom factor
+
     if ZoomFactor>1:
         pxc=np.shape(img)[0]
         newpxcH=int(pxc/ZoomFactor/2)
@@ -1068,10 +1060,9 @@ def prepare_image(img,ps=750,max_pixels=300,ZoomFactor=1,log=1,norms=[0,0],el_di
         dsize=[max_pixels,max_pixels]
 #        dsize=(np.array(np.shape(img))/downscale).astype('int')
         imgC= cv2.resize(imgC, dsize=dsize, interpolation=cv2.INTER_CUBIC)
-    return imgC,norms,[inte,suma] #measures = [inte,suma]
+    return imgC,norms,[inte,suma]
 
 def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
-    #Plots the image normalised to 1
     if log:
         norm=colors.LogNorm()
     else:
@@ -1091,8 +1082,7 @@ def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
         plt.text(.01, .99, "{:.0f} μm".format(ps/um), ha='left', va='top', transform=ax.transAxes,color='w')
     else:
         plt.text(.01, .99, "{:.1f} μm".format(ps/um), ha='left', va='top', transform=ax.transAxes,color='w')
-    #################################################################################################
-        
+        #################################################################################################
     if el_dict is not None:
         goodkeys=['size','f','shape','roc']
         units={}
@@ -1120,7 +1110,6 @@ def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
     plt.text(.99, .99, "M {:.1e}".format(measures[0]), ha='right', va='top', transform=ax.transAxes,color='w')
     ################ PLOT OF THE MAXIMUM OF THE INTENSITY 2D MAP (TOP RIGHT) ####################
     plt.text(.99, .89, "S {:.1e}".format(measures[1]), ha='right', va='top', transform=ax.transAxes,color='w')
-    
     return imgC
 
 def sort_elements(ele,debug=0):
@@ -1155,6 +1144,9 @@ def sort_elements(ele,debug=0):
 ## norms = [0,0] in the first passage of the loop and then norm=[integral / normalised , maximum] which gets updated at each passage in the loop.
 ## elements : Dictionnary of the optical elements : elements = { z position, element name, properties dictionnary}
 
+
+
+
 def doit(params,elements):
     #method=params['method']
     mu.clear_times()
@@ -1165,7 +1157,7 @@ def doit(params,elements):
     method=yamlval('method',params,'FFT')
     norms=[0,0]
     dtype=np.complex64
-    params['pxsize'] = params['propsize'] / params['N']
+    params['pxsize']=params['propsize']/params['N']
     N=params['N']
     max_pixels=yamlval('subfigure_size_px',params,300)
     if max_pixels>N: max_pixels=N
@@ -1197,15 +1189,15 @@ def doit(params,elements):
 #            ffdir=project_dir+'/flow_figs/'+fn2+'/'
             ffdir=params['projectdir']+'flow_figs/'+params['filename']+'_auto/'
             mu.mkdir(ffdir,0)
-    elements = sort_elements(elements)
-    wavelength = 12398/params['photon_energy']/10*nm
-    integ = 0
-    F = Begin(params['propsize'],wavelength,N,dtype=dtype)
-    propsize = params['propsize']
-    F = GaussBeam(F, params['beamsize'],x_shift=params['gauss_x_shift'],tx=params['gauss_x_tilt'])
-    F_pos = elements[0][0] #the starting position of my beamline
-    figs_to_save = yamlval('figs_to_save',params,[])
-    figs_to_export = yamlval('figs_to_export',params,[])
+    elements=sort_elements(elements)
+    wavelength=12398/params['photon_energy']/10*nm
+    integ=0
+    F=Begin(params['propsize'],wavelength,N,dtype=dtype)
+    propsize=params['propsize']
+    F=GaussBeam(F, params['beamsize'],x_shift=params['gauss_x_shift'],tx=params['gauss_x_tilt'])
+    F_pos=elements[0][0] #the starting position of my beamline
+    figs_to_save=yamlval('figs_to_save',params,[])
+    figs_to_export=yamlval('figs_to_export',params,[])
     if 'edge_damping' in params:
         do_edge_damping=1
         edge_damping_aperture = do_edge_damping_aperture(params)
@@ -1288,17 +1280,17 @@ def doit(params,elements):
             lab=lab+' ({:.0f}x)'.format(ZoomFactor)
 
     #Second: do the element
-        def_do_plot = 1
+        def_do_plot=1
         #Simon start----
         if el_type=='reg': #regularize propagation
             reg_prop_dict["regularized_propagation"] = True
             if 'reg-by-f' in el_dict:
-                tmp = el_dict['reg-by-f']
+                tmp=el_dict['reg-by-f']
             else:
                 tmp = reg_prop_dict["reg_parabola_focus"]
             F = Lens(F, -tmp)
-      #      print("Regularizing at {:.0f} m by value {:.2e}".format(F_pos,tmp))
-            def_do_plot = 0
+      #      print("   Regularizing at {:.0f} m by value {:.2e}".format(F_pos,tmp))
+            def_do_plot=0
         if el_type=='dereg': #deregularize propagation
             if not reg_prop_dict["regularized_propagation"]:
                 print("  You can't deregularize an already deregularized field!!!")
@@ -1308,7 +1300,7 @@ def doit(params,elements):
 #                print(reg_prop_dict["reg_parabola_focus"])
                 F = Lens(F, reg_prop_dict["reg_parabola_focus"])
             #    print("   Deregularizing in {:.0f} by value {:.2e}".format(F_pos,tmp))
-            def_do_plot = 0
+            def_do_plot=0
         #Simon end----
 
         ##extracgin regularizign for lens outside of lens
@@ -1361,43 +1353,41 @@ def doit(params,elements):
                             print("Unexpected regularizing by CRL")
                             print(f"..but still regularizing by CRL in {F_pos} by value {f}")
                 else:
-                    F = Lens(f,0,0,F)
+                    F=Lens(f,0,0,F)
                     #Simon end----
-            aperture = yamlval('size',el_dict,0)
+            aperture=yamlval('size',el_dict,0)
             if aperture==0 and 'CRL4' in el_type:
-                aperture = 400e-6
+                aperture=400e-6
 
-            if aperture > 0: #aperture
+            if aperture>0: #aperture
                 ap_dict={}
                 ap_dict['elem']='Hf'
                 ap_dict['thickness']=0.0001
                 ap_dict['shape']='circle'
                 ap_dict['size']=aperture
                 ap_dict['invert']=1
-                print(ap_dict)
-                print(params)
-                tmap,phasemap = doap(ap_dict,params) #Definition of the transmission map
-                F = MultIntensity(tmap,F)
+                tmap,phasemap=doap(ap_dict,params)
+                F=MultIntensity(tmap,F)
 
             if 'CRL4' in el_type: #creating all the decorations:
-                Lroc = yamlval('roc',el_dict,5.0e-5)
-                ab_dict = {}
-                ab_dict['elem'] = 'Be'
-                ab_dict['minr0'] = 0
-                ab_dict['shape'] = 'parabolic_lens'
-                ab_dict['size'] = aperture
-                ab_dict['roc'] = Lroc
-                ab_dict['double_sided'] = 1
-                ab_dict['num_lenses'] = yamlval('num_lenses',el_dict,1)
-                tmap2,phasemap = doap(ab_dict,params,debug=0)
-                F = MultIntensity(tmap*tmap2,F)
+                Lroc=yamlval('roc',el_dict,5.0e-5)
+                ab_dict={}
+                ab_dict['elem']='Be'
+                ab_dict['minr0']=0
+                ab_dict['shape']='parabolic_lens'
+                ab_dict['size']=aperture
+                ab_dict['roc']=Lroc
+                ab_dict['double_sided']=1
+                ab_dict['num_lenses']=yamlval('num_lenses',el_dict,1)
+                tmap2,phasemap=doap(ab_dict,params,debug=0)
+                F=MultIntensity(tmap*tmap2,F)
 
                 if not ideal:  #tohle prostě nefunguje...
-                    F = MultPhase(phasemap,F)
+                    F=MultPhase(phasemap,F)
                     print('doing real lens')
                     
             if yamlval('celestre',el_dict,1):
-                cel_dict = {}
+                cel_dict={}
                 cel_dict['defect']='celestre'
                 cel_dict['type']='phaseplate'
                 cel_dict['num']=yamlval('num_lenses',el_dict,1)
@@ -1427,7 +1417,7 @@ def doit(params,elements):
                     sc_dict['shape']='circle'
                     sc_dict['size']=aperture
                     default_k=3 #3 comes from 5348
-                    default_k=0.02 #3 comes from 6436
+                    default_k=0.02 #3 comes from 6436 ....10.6.2025: this seems too low!!
                     k=yamlval('lens_randomize_k',params,default_k)
                     if 'scatterer_k' in el_dict:
                             k=el_dict['scatterer_k']
@@ -1461,16 +1451,16 @@ def doit(params,elements):
                     bt=bt*tmap
                     ph+=phasemap
                 if yamlval('do_intensity',el_dict,1):
-                    F = MultIntensity(bt,F)
+                    F=MultIntensity(bt,F)
                 if yamlval('do_phaseshift',el_dict,1):
-                    F = MultPhase(ph,F)
+                    F=MultPhase(ph,F)
             else:
                 for i in np.arange(num):
                     tmap,phasemap=doap(el_dict,params)
                     if yamlval('do_intensity',el_dict,1):
-                        F = MultIntensity(tmap,F)
+                        F=MultIntensity(tmap,F)
                     if yamlval('do_phaseshift',el_dict,1):
-                        F = MultPhase(phasemap,F)
+                        F=MultPhase(phasemap,F)
 
 
 
@@ -1480,20 +1470,23 @@ def doit(params,elements):
 
         do_plot=yamlval('plot',el_dict,def_do_plot)
         plot_phase=yamlval('plot_phase',params,0)
-
-        ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ####################
+        
+        ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
         if plot_phase:
             I=Phase(F)
             print(np.max(I))
             print("plotting phase instead of intensity")
             if 0:
+                # %%
                 mu.figure()
+                #plt.imshow(I)
                 plt.imshow(ph)
                 plt.colorbar()
+#                plt.clim(0.55,0.65)
+ # %%
         else:
             I=Intensity(0,F)
         ####################################################################################
-
         
         letts=['a','b','c','d','e','f','g','h','i']
         Iint=(np.nansum(I))*propsize**2
@@ -1502,10 +1495,12 @@ def doit(params,elements):
 
         ########################### CALCULATION OF THE MAXIMUM AND INTEGRAL OF THE IMAGE #############
         #norms=[0,0] initially (1rst passage in the loop). Then, norms=[integral, sum] normalized.
-        im,norms,measures=prepare_image(I,ps=propsize,max_pixels=max_pixels,ZoomFactor=ZoomFactor,log=logg,norms=norms,el_dict=el_dict) #prepare l'image
+        
+        im,norms,measures=prepare_image(I,ps=propsize,max_pixels=max_pixels,ZoomFactor=ZoomFactor,log=logg,norms=norms,el_dict=el_dict)
         if el_name.startswith(tuple(figs_to_save)):
 
             print('Saving figure: {:}'.format(el_name))
+#            imS=im.astype('float16')
             figs[el_name]=[im,ei,propsize/ZoomFactor,z]
 
             if np.mod(ei,20)==0:
@@ -1513,25 +1508,26 @@ def doit(params,elements):
                 if np.size(figs)>0:
                     pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
                     mu.dumpPickle(figs, pkl_name)
-                    
+                    #mu.dumpPickle(figs,params['projectdir']+'pickles/'+params['filename']+'_figs')
+
         if auto_flow and 'flow' in el_name:
             fi=int(el_name.split('_')[1])
             position=float(el_name.split('_')[2])
             flow_savefig(I,ffdir,fi,propsize,params['filename'],position)
             plt.figure(fig)
 
-        if ei==0: I0int=Iint #Initial integral of signal
+        if ei==0: I0int=Iint
         trans[ei]=Iint/I0int
-        
+
         ######################## PLOTING THE FIGURE ######################
+        
         if do_plot: #plotting
             lab=lab+', '+el_name
             lab="({:}) ".format(ei)+lab
-    
+
             if np.isnan(Iint):
                 print('Something wrong here (nan integral)')
                 break
-
 
             ################# SUBPLOT OF EACH ELEMENT ###############
             plt.figure(fig)
@@ -1539,10 +1535,10 @@ def doit(params,elements):
             ax.set_facecolor("black")
             pi+=1
             plt.title(lab)
+
             ###################### PLOT OF THE IMAGE USING IMSHOW CUSTOMIZED FUNCTION ####################
             imshow(im,ps=propsize,ZoomFactor=ZoomFactor,log=logg,measures=measures,el_dict=el_dict)
-            
-            if 'roi' in el_dict: #If the property "ROI" is defined in the yaml file for the detector.
+            if 'roi' in el_dict:
                 s=el_dict['roi']/2
                 rect=np.array([-s,s,-s,s])
                 mu.drawRect(rect,color='r')
@@ -1550,7 +1546,7 @@ def doit(params,elements):
                 rect2=np.round((rect/psum + 0.5)*N)
                 rect2=rect2.astype('int')
                 ic=mu.cutRect(rect2,I)
-                integ=np.sum(ic)*propsize**2 #integral of signal inside ROI
+                integ=np.sum(ic)*propsize**2
                 roin=integ/norms[1]
                 rp1=roin/(np.sum(I)*propsize**2/norms[1])*100
                 plt.text(.02, .09, "ROI {:.1e} ({:.0f}%)".format(roin,rp1), ha='left', va='top', transform=ax.transAxes,color=[1,0.7,0.7])
@@ -1572,9 +1568,12 @@ def doit(params,elements):
             if el_name.startswith(tuple(figs_to_export)):
 
                 print('Exporting data for : {:}'.format(el_name))
+#                Na=np.arange(-N2,N2)*params['pxsize']/um
                 export_size=yamlval('export_size',params,300)
                 esel=np.abs(Na)<=export_size/um
+#                selI=I[esel,esel]
                 selI=I[esel,:][:,esel]
+                #cutting
                 export[el_name]=[selI,ei,z]
                 export[el_name]=[I,ei,propsize]
                 params['export_axis']=Na[esel]
@@ -1582,17 +1581,25 @@ def doit(params,elements):
             if not yamlval('axes',el_dict,1):
                 plt.xticks([])
                 plt.yticks([])
-
+            # %%
+#            mu.figure()
+ #           yt,ytl=plt.yticks()
+            #plt.yticks(np.arange(-100,110,10))
+                # %%
+        #if yamlval('ax_profiles',params) and params['ax_profiles']!=None and not auto_flow: #horizontal profiles
         if yamlval('profiles_subfig',params,None) is not None:
             plt.figure(fig)
+#            plt.sca(params['ax_profiles'])
             plt.subplot(params['fig_rows'],params['fig_cols'],params['profiles_subfig'])
             prof=np.sum(I,0)
             lab=el_name
+            #col=mu.colors[profi]
             col=rofl.cmap()(1.*ei/numel)
 
             if yamlval('profiles_normalize',params,1):
                 prof=mu.normalize(prof)
             l=plt.plot(Na,prof,label=lab,color=col)
+            #mu.text_at_plot(l,-30+profi*10,lab,fs=10,background=[1,1,1,0.6])
             profi+=1
             plt.title('Intensity profiles')
             plt.ylabel('Intensity')
@@ -1602,11 +1609,12 @@ def doit(params,elements):
             plt.ylim(yamlval('profiles_ylim',params,[1e-12,1e3]))
 
 
+#        mu.savefig(params['filename'])
         if save_parts:
             mu.savefig('part/'+params['filename']+'__{:02.0f}'.format(ei))
         if pi>=yamlval('break_at',params,10000):break
         if yamlval('end_after',params,'asdfasdfasdf')==el_name: break
-    trans[-1]=integ/I0int #Integral of signal inside ROI / initial intensity
+    trans[-1]=integ/I0int
 
     params['transmission']=trans
     params['intensities']=intensities
@@ -1623,9 +1631,11 @@ def doit(params,elements):
 
 #    plt.legend()
     if np.size(figs)>0:
+        #mu.dumpPickle(figs,params['projectdir']+'pickles/'+params['filename']+'_figs')
         pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
         mu.dumpPickle(figs, pkl_name)
     if len(export)>0:
+        #mu.dumpPickle(export,params['projectdir']+'pickles/'+params['filename']+'_export')
         pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
         mu.dumpPickle(figs, pkl_name)
 
@@ -1654,23 +1664,25 @@ def yamlval(key,ip,default=0):
 
 
 def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type='center',log=1,xl=None,flow_figs=0,flow_plot_crange=1e-5):
-    
-    cols = ['g','r','k','b',[0.5,1,0.8],[1,0.3,0.8],'r']
-    mu.figure(8,4)
+    #gyax=np.arange(-50,50,1) #μm
+    #vertical_type='integral'
+    #vertical_type='vert-center'
+    cols=['g','r','k','b',[0.5,1,0.8],[1,0.3,0.8],'r']
+    mu.figure(10,6)
 
-    gyax = np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
-    fn = str(file)+'_figs'
-    fns = fn
+    gyax=np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
+    fn=str(file)+'_figs'
+    fns=fn
     pic = mu.loadPickle('./'+project_dir+'/pickles/'+fn+'.pickle',strict=1) #loading the images
     p2 = fn.replace('figs','res')
     p2 = p2.replace('export','res')
     res = mu.loadPickle('./'+project_dir+'/pickles/'+p2+'.pickle') #loading the general parameters
     partial=(res==0)
-    fn2 = fns[:-5]
-    l = fn2
-    scatterer_L2_position = 1e9
-    scatterer_L1_position = 1e9
-    skip_existing = 1
+    fn2=fns[:-5]
+    l=fn2
+    scatterer_L2_position=1e9
+    scatterer_L1_position=1e9
+    skip_existing=1
     if not partial:
         params=res[1]
     #extracting scatterers and theirloses
@@ -1738,7 +1750,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
             if plot:
                 print(fi,'    ',fig,' plotting')
                 boxsize=100
-                mu.figure(7,7,safe=1)
+                mu.figure(10,10,safe=1)
                 npix=np.shape(picc)[0]
                 xc=(np.arange(npix)-npix/2)*pxsize
                 cmax=np.max(picc)
@@ -1764,13 +1776,13 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
             lineout=lineout/scatterer_L2_loss/scatterer_L1_loss
         elif position>=scatterer_L1_position:
             lineout=lineout/scatterer_L1_loss
-        waterfall[fi,:] = lineout
-        zax[fi] = position
-        inteprpprof = np.interp(gyax,xax,lineout)
+        waterfall[fi,:]=lineout
+        zax[fi]=position
+        inteprpprof=np.interp(gyax,xax,lineout)
         inteprpprof[gyax<np.min(xax)]=np.nan
         inteprpprof[gyax>np.max(xax)]=np.nan
-        fixedfall[fi,:] = inteprpprof
-        propsizes[fi] = propsize
+        fixedfall[fi,:]=inteprpprof
+        propsizes[fi]=propsize
 
     fixedfall[fixedfall<=0]=1e-30
     waterfall[waterfall<=0]=1e-30
@@ -1778,7 +1790,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
     l2=l
     l2+=' cut: '+vertical_type
     if 0:
-        mu.figure(13,6)
+        mu.figure(16,9)
         nn=np.shape(picc)[0]
         rax=np.arange(nn)/nn*100-50
         pxsizes=propsizes*1e6/nn
@@ -1794,25 +1806,29 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
         mu.savefig('./flows/boxflow_{:}_{:}'.format(l,vertical_type))
 
     ################## PLOT OF THE MAIN FLOW FIG #####################
-    mu.figure(13,6)
-    linearize = 0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
+    mu.figure(16,9)
+    print(cl)
+    linearize=0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
     if linearize:
+        #mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1,xtics_spacing=1)
         mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1) #,xtics_spacing=1
         pos=np.arange(0,np.size(zax),15)
         vals=[]
         for va in zax[pos]:
             vals.append('{:.1f}'.format(va))
         plt.xticks(pos,vals)
+#        ax.xaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.3f}"))
+        #plt.yticks(np.arange(-gyax_def[1],-gyax_def[0],50))
         plt.yticks(np.arange(0,np.size(gyax)+1,50))
     else:
-        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl) ########### MAIN PLOT ##########
+        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl)
     profile=mu.normalize(propsizes)*np.max(gyax)
+#%% %decorations
     maxy=np.min(gyax)
-    print(partial)
     if not partial:
 
-        ip = res[0]
-        row = 0
+        ip=res[0]
+        row=0
         plt.xlim(xl)
         for el_name in ip:
             el=ip[el_name]
@@ -1853,6 +1869,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
 
         plt.xlabel('Position [m]')
         plt.ylabel('Horizontal position [μm]')
+        #plt.xlim(np.min(zax),np.max(zax))
         if xl==None:
             plt.xlim(np.min(zax),np.max(zax))
         else:

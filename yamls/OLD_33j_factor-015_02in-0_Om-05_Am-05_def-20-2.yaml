@@ -1,6 +1,7 @@
 start:
   position: -101
   type: image
+  
 beam_shaper:
   position: -100
   type: aperture
@@ -8,6 +9,7 @@ beam_shaper:
   invert: 0
   power: 8
   size: 0.00018
+  
 O1:
   position: -3
   elem: W
@@ -18,6 +20,7 @@ O1:
   defect_type: sine
   defect_lambda: 1.9999999999999998e-05
   defect_amplitude: 2.0e-06
+  
 L1:
   position: -1.2
   type: lens_reg
@@ -109,8 +112,9 @@ simulation:
   focus_test_zoom: 150
   name: as_filename
   pptype: N
-  project: Aime
+  project: 33_double-imaging
   propsize: 0.0012000000000000001
+  
   smooth: 0
   subfigure_size_px: 1500
   version: 1
@@ -138,5 +142,5 @@ simulation:
   flow_plot_clim:
   - 1e-11
   - 50
-meta:
-  wide_factor: 1.5
+#meta:
+#  wide_factor: 1.5
