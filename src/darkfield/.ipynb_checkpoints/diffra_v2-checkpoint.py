@@ -642,8 +642,9 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
         for yi in np.arange(N):
             #op=int(offsets_px[yi])
             op = offsets_px[yi]
-            a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
-            tmp[:,yi]=np.transpose(a)
+            #a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
+            #tmp[:,yi]=np.transpose(a)
+            tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
         thicknessmap=tmp*1
 
     return thicknessmap
