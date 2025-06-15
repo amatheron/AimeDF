@@ -637,7 +637,7 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
         x = Na * 2 * np.pi / l
         offsets=np.sin(x)*a
         #offsets_px=(np.round(offsets/pxsize))
-        offsets_px = np.round(offsets_m / pxsize).astype(int)
+        offsets_px = np.round(offsets / pxsize).astype(int)
         tmp=thicknessmap*0
         for yi in np.arange(N):
             #op=int(offsets_px[yi])
@@ -1328,34 +1328,68 @@ def doit(params,elements):
                     print(f"..but still regularizing by CRL in {F_pos} by value {f}")
 
 
+        #if 'lens' in el_type:
+        #    #Simon start----
+        #    ideal=yamlval('ideal',el_dict,1)
+        #    if ideal:
+        #        f=el_dict['f']
+        #        if "reg" in el_type:
+        #            if reg_prop_dict["reg_parabola_focus"] is None:
+        #                reg_prop_dict["reg_parabola_focus"] = f
+        #                reg_prop_dict["regularized_propagation"] = True
+        #                print(f"Regularizing by CRL in {F_pos} by value {f}")
+        #            else:
+        #                #for inserting second, that images the focus made by first CRL
+        #                if reg_prop_dict["regularized_propagation"] == True:
+        #                    f2_tmp = f
+        #                    #thin lens formula (zobrazovaci rovnice), where focus is the object
+        #                    reg_new_tmp = 1.0/(1.0/f2_tmp + 1.0/reg_prop_dict["reg_parabola_focus"])
+        #                    reg_prop_dict["reg_parabola_focus"] = reg_new_tmp
+        #                    print("Re-regularizing by CRL")
+        #                else:
+        #                    #I dont know if we ever need this, so this is just a guess of
+        #                    #how it might look
+        #                    reg_prop_dict["reg_parabola_focus"] = f
+        #                    reg_prop_dict["regularized_propagation"] = True
+        #                    print("Unexpected regularizing by CRL")
+        #                    print(f"..but still regularizing by CRL in {F_pos} by value {f}")
+        #        else:
+        #            F=Lens(f,0,0,F)
+        #            #Simon end----
+
         if 'lens' in el_type:
-            #Simon start----
-            ideal=yamlval('ideal',el_dict,1)
+            ideal = yamlval('ideal', el_dict, 1)
             if ideal:
-                f=el_dict['f']
-                if "reg" in el_type:
+                f = el_dict['f']
+        
+                # Default: use f for reg, unless ManualReg is specified
+                if "ManualReg" in el_type:
+                    f_reg = el_dict.get('f_manual_reg', f)  # use fallback just in case
+                else:
+                    f_reg = f
+
+                # If it's a regularising lens
+                if "reg" in el_type or "ManualReg" in el_type:
                     if reg_prop_dict["reg_parabola_focus"] is None:
-                        reg_prop_dict["reg_parabola_focus"] = f
+                        reg_prop_dict["reg_parabola_focus"] = f_reg
                         reg_prop_dict["regularized_propagation"] = True
-                        print(f"Regularizing by CRL in {F_pos} by value {f}")
+                        print(f"Regularizing by CRL in {F_pos} by value {f_reg}")
                     else:
-                        #for inserting second, that images the focus made by first CRL
                         if reg_prop_dict["regularized_propagation"] == True:
-                            f2_tmp = f
-                            #thin lens formula (zobrazovaci rovnice), where focus is the object
-                            reg_new_tmp = 1.0/(1.0/f2_tmp + 1.0/reg_prop_dict["reg_parabola_focus"])
+                            f2_tmp = f_reg
+                            reg_new_tmp = 1.0 / (1.0 / f2_tmp + 1.0 / reg_prop_dict["reg_parabola_focus"])
                             reg_prop_dict["reg_parabola_focus"] = reg_new_tmp
                             print("Re-regularizing by CRL")
                         else:
-                            #I dont know if we ever need this, so this is just a guess of
-                            #how it might look
-                            reg_prop_dict["reg_parabola_focus"] = f
+                            reg_prop_dict["reg_parabola_focus"] = f_reg
                             reg_prop_dict["regularized_propagation"] = True
                             print("Unexpected regularizing by CRL")
-                            print(f"..but still regularizing by CRL in {F_pos} by value {f}")
+                            print(f"..but still regularizing by CRL in {F_pos} by value {f_reg}")
                 else:
-                    F=Lens(f,0,0,F)
-                    #Simon end----
+                    F = Lens(f, 0, 0, F)
+
+
+                    
             aperture=yamlval('size',el_dict,0)
             if aperture==0 and 'CRL4' in el_type:
                 aperture=400e-6
