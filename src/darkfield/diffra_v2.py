@@ -630,22 +630,48 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
         thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
 
     defect_type=yamlval('defect_type',pars)
-    if defect_type=='sine':
-        l=yamlval('defect_lambda',pars)
-        a=yamlval('defect_amplitude',pars)
-        #offsets=np.sin(Na/(l/2/3.1415))*a # Michal's version
-        x = Na * 2 * np.pi / l
-        offsets=np.sin(x)*a
-        #offsets_px=(np.round(offsets/pxsize))
-        offsets_px = np.round(offsets / pxsize).astype(int)
-        tmp=thicknessmap*0
-        for yi in np.arange(N):
-            #op=int(offsets_px[yi])
-            op = offsets_px[yi]
-            #a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
-            #tmp[:,yi]=np.transpose(a)
-            tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
-        thicknessmap=tmp*1
+    #if defect_type=='sine':
+    #    l = yamlval('defect_lambda',pars)
+    #    a = yamlval('defect_amplitude',pars)
+    #    #offsets=np.sin(Na/(l/2/3.1415))*a # Michal's version
+    #    x = Na * 2 * np.pi / l
+    #    offsets = np.sin(x)*a
+    #    #offsets_px=(np.round(offsets/pxsize))
+    #    offsets_px = np.round(offsets / pxsize).astype(int)
+    #    tmp = thicknessmap*0
+    #    for yi in np.arange(N):
+    #        #op=int(offsets_px[yi])
+    #        op = offsets_px[yi]
+    #        #a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
+    #        #tmp[:,yi]=np.transpose(a)
+    #        tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
+    #    thicknessmap = tmp*1
+
+
+
+    if defect_type in ['sine', 'sawtooth', 'triangle']:
+        wavelength = float(yamlval('defect_lambda', pars))
+        amplitude = float(yamlval('defect_amplitude', pars))
+
+        # Create phase array
+        x = Na * 2 * np.pi / wavelength  # normalize to [0, 2π]
+
+        if defect_type == 'sine':
+            offsets_m = np.sin(x) * amplitude
+        elif defect_type == 'sawtooth':
+            offsets_m = signal.sawtooth(x) * amplitude
+        elif defect_type == 'triangle':
+            offsets_m = signal.sawtooth(x, width=0.5) * amplitude  # triangle waveform
+
+        offsets_px = np.round(offsets_m / pxsize).astype(int)
+
+        tmp = np.zeros_like(thicknessmap)
+        for yi in range(N):
+            
+            defect_line = np.roll(np.transpose(np.array(thicknessmap[:,yi])),offsets_px[yi]) #Michal's and Pooyan's version (not optimal?)
+            tmp[:, yi] = np.transpose(defect_line)
+
+        thicknessmap = tmp.copy()
 
     return thicknessmap
 
@@ -1361,12 +1387,8 @@ def doit(params,elements):
             ideal = yamlval('ideal', el_dict, 1)
             if ideal:
                 f = el_dict['f']
-        
-                # Default: use f for reg, unless ManualReg is specified
-                if "ManualReg" in el_type:
-                    f_reg = el_dict.get('f_manual_reg', f)  # use fallback just in case
-                else:
-                    f_reg = f
+                f_reg = el_dict.get('f_manual_reg', f) if "ManualReg" in el_type else f
+
 
                 # If it's a regularising lens
                 if "reg" in el_type or "ManualReg" in el_type:
@@ -1385,8 +1407,17 @@ def doit(params,elements):
                             reg_prop_dict["regularized_propagation"] = True
                             print("Unexpected regularizing by CRL")
                             print(f"..but still regularizing by CRL in {F_pos} by value {f_reg}")
+
+                # Correct focal length of physical lens if ManualReg is used
+                if "ManualReg" in el_type:
+                    if abs(1/f - 1/f_reg) < 1e-12:
+                        raise ValueError("ManualReg: (1/f - 1/f_manual_reg) is too small, focal would be infinite.")
+                    f_insert = 1.0 / (1.0/f - 1.0/f_reg)
                 else:
-                    F = Lens(f, 0, 0, F)
+                    f_insert = f
+            
+                F = Lens(f_insert, 0, 0, F)
+                
 
 
                     

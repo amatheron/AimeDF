@@ -1,0 +1,82 @@
+start:
+  position: -101
+  type: image
+  
+beam_shaper:
+  position: -100
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 8
+  size: 650.0e-6 #diameter
+
+CRL3:
+  in: 1
+  position: -9
+  type: lens_ManualReg
+  num_lenses: 13
+  f: 10.978
+  f_manual_reg: 30.0
+  size: 2.0e-3 #diameter
+  seiboth: False
+  celestre: False
+  scatterer: False
+  
+L1:
+  position: -1.4
+  type: CRL4_lens_reg
+  in: 1
+  num_lenses: 13
+  f: 2.391
+  size: 0.0006 #diameter
+
+Det:
+  position: 2.0
+  type: imager
+  roi: 13
+  roi2: 75
+beam:
+  offset: 0
+  size: 2.25e-3
+  photonenergy: 8766
+simulation: #parameters below are stocked in "params"
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 5.0e-3
+  
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save: ['CRL3','Det','flow']
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -12.0
+  - 2.1
+  - 0.03
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -225.0
+  - 225.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
+#meta:
+#  wide_factor: 1.5
