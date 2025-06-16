@@ -25,7 +25,7 @@ from pathlib import Path
 #HOME = '/home/yu79deg/darkfield_p5438/'
 
 # Template and output setup
-yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_28_template.yaml' #name of the template yaml file that we modify
+yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_189.yaml' #name of the template yaml file that we modify
 outdir = '/home/yu79deg/darkfield_p5438/yamls' # folder where it will save the generate yamls
 os.makedirs(outdir, exist_ok=True)
 
@@ -39,7 +39,7 @@ os.makedirs(outdir, exist_ok=True)
 #}
 
 param_dict = {
-    'O2_size': [240,200,120,80,20,0], 
+    'O2_size': [0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,110,120,130,140,150,160,170,180,190,200,220,240,260], 
 }
 
 ####################################################
