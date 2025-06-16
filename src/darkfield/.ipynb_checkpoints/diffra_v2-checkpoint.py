@@ -1309,26 +1309,26 @@ def doit(params,elements):
     #Second: do the element
         def_do_plot=1
         #Simon start----
-        if el_type=='reg': #regularize propagation
+        if el_type == 'reg':  # regularize propagation
             reg_prop_dict["regularized_propagation"] = True
             if 'reg-by-f' in el_dict:
-                tmp=el_dict['reg-by-f']
+                tmp = el_dict['reg-by-f']
             else:
                 tmp = reg_prop_dict["reg_parabola_focus"]
             F = Lens(F, -tmp)
-      #      print("   Regularizing at {:.0f} m by value {:.2e}".format(F_pos,tmp))
-            def_do_plot=0
-        if el_type=='dereg': #deregularize propagation
+            def_do_plot = 0
+
+        elif el_type == 'dereg':  # deregularize propagation
             if not reg_prop_dict["regularized_propagation"]:
                 print("  You can't deregularize an already deregularized field!!!")
             else:
                 reg_prop_dict["regularized_propagation"] = False
                 tmp = reg_prop_dict["reg_parabola_focus"]
-#                print(reg_prop_dict["reg_parabola_focus"])
                 F = Lens(F, reg_prop_dict["reg_parabola_focus"])
-            #    print("   Deregularizing in {:.0f} by value {:.2e}".format(F_pos,tmp))
-            def_do_plot=0
+                
+            def_do_plot = 0
         #Simon end----
+
 
         ##extracgin regularizign for lens outside of lens
         if "reg-by-f" in el_dict:
@@ -1387,36 +1387,28 @@ def doit(params,elements):
             ideal = yamlval('ideal', el_dict, 1)
             if ideal:
                 f = el_dict['f']
-                f_reg = el_dict.get('f_manual_reg', f) if "ManualReg" in el_type else f
-
-
-                # If it's a regularising lens
-                if "reg" in el_type or "ManualReg" in el_type:
+                if "reg" in el_type:
                     if reg_prop_dict["reg_parabola_focus"] is None:
-                        reg_prop_dict["reg_parabola_focus"] = f_reg
+                        reg_prop_dict["reg_parabola_focus"] = f
                         reg_prop_dict["regularized_propagation"] = True
-                        print(f"Regularizing by CRL in {F_pos} by value {f_reg}")
+                        print(f"Regularizing by CRL in {F_pos} by value {f}")
                     else:
+                        #for inserting second, that images the focus made by first CRL
                         if reg_prop_dict["regularized_propagation"] == True:
-                            f2_tmp = f_reg
-                            reg_new_tmp = 1.0 / (1.0 / f2_tmp + 1.0 / reg_prop_dict["reg_parabola_focus"])
+                            f2_tmp = f
+                            #thin lens formula (zobrazovaci rovnice), where focus is the object
+                            reg_new_tmp = 1.0/(1.0/f2_tmp + 1.0/reg_prop_dict["reg_parabola_focus"])
                             reg_prop_dict["reg_parabola_focus"] = reg_new_tmp
                             print("Re-regularizing by CRL")
                         else:
-                            reg_prop_dict["reg_parabola_focus"] = f_reg
+                            #I dont know if we ever need this, so this is just a guess of
+                            #how it might look
+                            reg_prop_dict["reg_parabola_focus"] = f
                             reg_prop_dict["regularized_propagation"] = True
                             print("Unexpected regularizing by CRL")
-                            print(f"..but still regularizing by CRL in {F_pos} by value {f_reg}")
-
-                # Correct focal length of physical lens if ManualReg is used
-                if "ManualReg" in el_type:
-                    if abs(1/f - 1/f_reg) < 1e-12:
-                        raise ValueError("ManualReg: (1/f - 1/f_manual_reg) is too small, focal would be infinite.")
-                    f_insert = 1.0 / (1.0/f - 1.0/f_reg)
+                            print(f"..but still regularizing by CRL in {F_pos} by value {f}")
                 else:
-                    f_insert = f
-            
-                F = Lens(f_insert, 0, 0, F)
+                    F=Lens(f,0,0,F)
                 
 
 

@@ -22,16 +22,36 @@ CRL3:
   celestre: False
   scatterer: False
   
+  
 L1:
   position: -1.4
-  type: CRL4_lens_reg
+  type: CRL4_lens_ManualReg
   in: 1
   num_lenses: 13
   f: 2.391
+  f_manual_reg: 5
   size: 0.0006 #diameter
 
+  
+dereg1:
+  position: 2
+  type: dereg
+  reg-by-f: 2.15
+  plot: 1
+
+
+TCC:
+  type: imager
+  position: 0
+
+reg1:
+  position: 3
+  type: reg
+  reg-by-f: -10.0 
+  plot: 0
+
 Det:
-  position: 2.0
+  position: 4.0
   type: imager
   roi: 13
   roi2: 75
@@ -61,14 +81,14 @@ simulation: #parameters below are stocked in "params"
   profiles_xlim:
   - 0
   - 200
-  figs_to_save: ['CRL3','Det','flow']
+  figs_to_save: ['Det','TCC','flow']
   figs_log: 1
   edge_damping:
   - 0.25
   edge_damping_shape: circular
   flow:
   - -12.0
-  - 2.1
+  - 4
   - 0.03
   flow_auto_save: 0
   flow_plot_gyax:

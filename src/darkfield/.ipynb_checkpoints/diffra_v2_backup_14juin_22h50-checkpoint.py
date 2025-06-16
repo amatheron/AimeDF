@@ -630,48 +630,22 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
         thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
 
     defect_type=yamlval('defect_type',pars)
-    #if defect_type=='sine':
-    #    l = yamlval('defect_lambda',pars)
-    #    a = yamlval('defect_amplitude',pars)
-    #    #offsets=np.sin(Na/(l/2/3.1415))*a # Michal's version
-    #    x = Na * 2 * np.pi / l
-    #    offsets = np.sin(x)*a
-    #    #offsets_px=(np.round(offsets/pxsize))
-    #    offsets_px = np.round(offsets / pxsize).astype(int)
-    #    tmp = thicknessmap*0
-    #    for yi in np.arange(N):
-    #        #op=int(offsets_px[yi])
-    #        op = offsets_px[yi]
-    #        #a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
-    #        #tmp[:,yi]=np.transpose(a)
-    #        tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
-    #    thicknessmap = tmp*1
-
-
-
-    if defect_type in ['sine', 'sawtooth', 'triangle']:
-        wavelength = float(yamlval('defect_lambda', pars))
-        amplitude = float(yamlval('defect_amplitude', pars))
-
-        # Create phase array
-        x = Na * 2 * np.pi / wavelength  # normalize to [0, 2π]
-
-        if defect_type == 'sine':
-            offsets_m = np.sin(x) * amplitude
-        elif defect_type == 'sawtooth':
-            offsets_m = signal.sawtooth(x) * amplitude
-        elif defect_type == 'triangle':
-            offsets_m = signal.sawtooth(x, width=0.5) * amplitude  # triangle waveform
-
-        offsets_px = np.round(offsets_m / pxsize).astype(int)
-
-        tmp = np.zeros_like(thicknessmap)
-        for yi in range(N):
-            
-            defect_line = np.roll(np.transpose(np.array(thicknessmap[:,yi])),offsets_px[yi]) #Michal's and Pooyan's version (not optimal?)
-            tmp[:, yi] = np.transpose(defect_line)
-
-        thicknessmap = tmp.copy()
+    if defect_type=='sine':
+        l=yamlval('defect_lambda',pars)
+        a=yamlval('defect_amplitude',pars)
+        #offsets=np.sin(Na/(l/2/3.1415))*a # Michal's version
+        x = Na * 2 * np.pi / l
+        offsets=np.sin(x)*a
+        #offsets_px=(np.round(offsets/pxsize))
+        offsets_px = np.round(offsets / pxsize).astype(int)
+        tmp=thicknessmap*0
+        for yi in np.arange(N):
+            #op=int(offsets_px[yi])
+            op = offsets_px[yi]
+            #a=np.roll(np.transpose(np.array(thicknessmap[:,yi])),op)
+            #tmp[:,yi]=np.transpose(a)
+            tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
+        thicknessmap=tmp*1
 
     return thicknessmap
 
@@ -1309,26 +1283,26 @@ def doit(params,elements):
     #Second: do the element
         def_do_plot=1
         #Simon start----
-        if el_type == 'reg':  # regularize propagation
+        if el_type=='reg': #regularize propagation
             reg_prop_dict["regularized_propagation"] = True
             if 'reg-by-f' in el_dict:
-                tmp = el_dict['reg-by-f']
+                tmp=el_dict['reg-by-f']
             else:
                 tmp = reg_prop_dict["reg_parabola_focus"]
             F = Lens(F, -tmp)
-            def_do_plot = 0
-
-        elif el_type == 'dereg':  # deregularize propagation
+      #      print("   Regularizing at {:.0f} m by value {:.2e}".format(F_pos,tmp))
+            def_do_plot=0
+        if el_type=='dereg': #deregularize propagation
             if not reg_prop_dict["regularized_propagation"]:
                 print("  You can't deregularize an already deregularized field!!!")
             else:
                 reg_prop_dict["regularized_propagation"] = False
                 tmp = reg_prop_dict["reg_parabola_focus"]
+#                print(reg_prop_dict["reg_parabola_focus"])
                 F = Lens(F, reg_prop_dict["reg_parabola_focus"])
-                
-            def_do_plot = 0
+            #    print("   Deregularizing in {:.0f} by value {:.2e}".format(F_pos,tmp))
+            def_do_plot=0
         #Simon end----
-
 
         ##extracgin regularizign for lens outside of lens
         if "reg-by-f" in el_dict:
@@ -1354,39 +1328,11 @@ def doit(params,elements):
                     print(f"..but still regularizing by CRL in {F_pos} by value {f}")
 
 
-        #if 'lens' in el_type:
-        #    #Simon start----
-        #    ideal=yamlval('ideal',el_dict,1)
-        #    if ideal:
-        #        f=el_dict['f']
-        #        if "reg" in el_type:
-        #            if reg_prop_dict["reg_parabola_focus"] is None:
-        #                reg_prop_dict["reg_parabola_focus"] = f
-        #                reg_prop_dict["regularized_propagation"] = True
-        #                print(f"Regularizing by CRL in {F_pos} by value {f}")
-        #            else:
-        #                #for inserting second, that images the focus made by first CRL
-        #                if reg_prop_dict["regularized_propagation"] == True:
-        #                    f2_tmp = f
-        #                    #thin lens formula (zobrazovaci rovnice), where focus is the object
-        #                    reg_new_tmp = 1.0/(1.0/f2_tmp + 1.0/reg_prop_dict["reg_parabola_focus"])
-        #                    reg_prop_dict["reg_parabola_focus"] = reg_new_tmp
-        #                    print("Re-regularizing by CRL")
-        #                else:
-        #                    #I dont know if we ever need this, so this is just a guess of
-        #                    #how it might look
-        #                    reg_prop_dict["reg_parabola_focus"] = f
-        #                    reg_prop_dict["regularized_propagation"] = True
-        #                    print("Unexpected regularizing by CRL")
-        #                    print(f"..but still regularizing by CRL in {F_pos} by value {f}")
-        #        else:
-        #            F=Lens(f,0,0,F)
-        #            #Simon end----
-
         if 'lens' in el_type:
-            ideal = yamlval('ideal', el_dict, 1)
+            #Simon start----
+            ideal=yamlval('ideal',el_dict,1)
             if ideal:
-                f = el_dict['f']
+                f=el_dict['f']
                 if "reg" in el_type:
                     if reg_prop_dict["reg_parabola_focus"] is None:
                         reg_prop_dict["reg_parabola_focus"] = f
@@ -1409,10 +1355,7 @@ def doit(params,elements):
                             print(f"..but still regularizing by CRL in {F_pos} by value {f}")
                 else:
                     F=Lens(f,0,0,F)
-                
-
-
-                    
+                    #Simon end----
             aperture=yamlval('size',el_dict,0)
             if aperture==0 and 'CRL4' in el_type:
                 aperture=400e-6
