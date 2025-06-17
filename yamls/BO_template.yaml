@@ -1,108 +1,118 @@
 start:
-  position: -1.142
+  position: -101
   type: image
-  
 beam_shaper:
   position: -100
   type: aperture
   shape: gaussian
   invert: 0
   power: 8
-  size: 0.00018
-  
-O1:
-  position: -1.142
-  elem: W
+  size: 0.00065
+CRL3:
   in: 1
+  position: -9
+  type: lens_reg
+  num_lenses: 13
+  f: 10.978
+  size: 0.002
+  seiboth: false
+  celestre: false
+  scatterer: false
+O1:
+  in: 1
+  position: -7.4
+  elem: W
   shape: realwire
-  size: 0.000180
+  size: 0.00022211
   type: aperture
-  #defect_type: sine
-  #defect_lambda: 1.9999999999999998e-05
-  #defect_amplitude: 2.0e-06
-  
+dereg3:
+  position: -1.5
+  type: dereg
+  plot: 1
 L1:
-  position: -0.428
+  position: -1.4
   type: CRL4_lens_reg
   in: 1
-  num_lenses: 10
-  f: 0.428
-  size: 400.e-6
+  num_lenses: 13
+  f: 2.391
+  size: 0.0006
+  seiboth: true
+  celestre: true
+  scatterer: false
 O2:
-  position: -0.375
-  elem: W
   in: 1
+  position: -1.3
+  elem: W
   shape: realwire
-  size: 0.000160
+  size: 0.00017999999999999998
   type: aperture
-  #defect_type: sine
-  #defect_lambda: 2.02e-05
-  #defect_amplitude: 2.0e-06
+dereg1:
+  position: -1
+  type: dereg
+  plot: 1
 PH:
   in: 1
-  position: -1.e-3
-  size: 80.e-6
+  position: -0.01
+  size: 8.0e-05
   invert: 1
-  elem: W
-  thickness: 400.e-6
+  elem: Au
+  thickness: 2.0e-05
   zoom: 1
   type: aperture
   shape: circle
-dereg1:
-  position: -5.0e-2
-  type: dereg
-  plot: 1
 TCC:
   type: imager
   position: 0
 reg1:
-  position: 5.0e-2
+  in: 0
+  position: 1
   type: reg
   plot: 0
 A1-:
-  position: 0.3
+  position: 2.574
   type: imager
 A1:
   in: 1
   elem: W
-  #r: 0.0002 #for wireslit
-  d: 100 #this is for linearslit
-  l: 600 #this is for linearslit
-  shape: linearslit #wireslit
-  size: 140.e-06 #2.25e-05
-  position: 0.777 #2.5
-  type: aperture
-  #defect_type: sine
-  #defect_lambda: 2.0399999999999998e-05
-  #defect_amplitude: 2.0e-06
-L2:
-  position: 1.132
-  f: 0.916
-  type: CRL4_lens_reg
-  size: 400.e-6
-  num_lenses: 6
-A2:
-  position: 3.330
   r: 0.0002
   shape: wireslit
-  size: 100.0e-6
+  size: 6.0e-05
+  position: 2.575
+  type: aperture
+  defect_type: triangle
+  defect_lambda: 2.0e-05
+  defect_amplitude: 2.0e-05
+L2:
+  in: 1
+  position: 3.075
+  f: 2.129
+  type: CRL4_lens
+  size: 0.0006
+  num_lenses: 6
+  seiboth: true
+  celestre: true
+  scatterer: false
+A2:
+  in: 0
+  position: 7.224
+  r: 0.0002
+  shape: wireslit
+  size: 7.500000000000001e-06
   type: aperture
   elem: W
-  #defect_type: sine
-  #defect_lambda: 2.06e-05
-  #defect_amplitude: 2.0e-06
 dereg2:
-  position: 4.8
+  in: 0
+  position: 9.3
   type: dereg
   plot: 0
 Det:
-  position: 5.8
+  position: 10.0
   type: imager
   roi: 13
   roi2: 75
 beam:
   offset: 0
-  size: 390e-6
+  size: 0.00225
   photonenergy: 8766
 simulation:
   beamdiv: 0.0001
@@ -115,33 +125,36 @@ simulation:
   name: as_filename
   pptype: N
   project: Aime
-  propsize: 1500.e-6
-  
+  propsize: 0.0025
   smooth: 0
   subfigure_size_px: 1500
   version: 1
   intensity_ylim:
-  - 1.0e-13
+  - 1.0e-10
   - 2.0
   profiles_xlim:
   - 0
   - 200
-  figs_to_save: ['CRL1','PH','Det','A1','TCC','flow']
+  figs_to_save:
+  - CRL1
+  - PH
+  - Det
+  - A1
+  - TCC
+  - flow
   figs_log: 1
   edge_damping:
   - 0.25
   edge_damping_shape: circular
   flow:
-  - -1.2
-  - 6
+  - -12.0
+  - 10.2
   - 0.03
   flow_auto_save: 0
   flow_plot_gyax:
-  - -200.0
-  - 200.0
+  - -225.0
+  - 225.0
   - 1.0
   flow_plot_clim:
   - 1e-11
   - 50
-#meta:
-#  wide_factor: 1.5

@@ -231,7 +231,7 @@ for positive_signal_simulation in positive_signal_simulations:
         gyax = df.yamlval('flow_plot_gyax', ip['simulation'], [-200, 1000, 10])
         clim = df.yamlval('flow_plot_clim', ip['simulation'], [1e-11, 50])
         print(str(projectdir.relative_to('/home/yu79deg')), fn )
-        #df.flow_plot(str(projectdir), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
-        df.flow_plot(str(projectdir.relative_to('/home/yu79deg')), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
+        df.flow_plot(str(projectdir), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
+        #df.flow_plot(str(projectdir.relative_to('/home/yu79deg')), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
 
 print('Simulation finished.')
