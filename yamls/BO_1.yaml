@@ -27,7 +27,7 @@ O2:
   elem: W
   in: 1
   shape: realwire
-  size: 0.00019099999999999998
+  size: 4.9999999999999996e-05
   type: aperture
 PH:
   in: 1
