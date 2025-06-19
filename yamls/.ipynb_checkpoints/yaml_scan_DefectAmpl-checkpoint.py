@@ -39,7 +39,7 @@ os.makedirs(outdir, exist_ok=True)
 #}
 
 param_dict = {
-    'defect_amplitude': [50,45,40,35,30,25,20,15,10,5,0], 
+    'wide_factor': np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.2, 1.4, 1.8, 2, 2.4, 2.8]), 
 }
 
 ####################################################
@@ -69,30 +69,19 @@ for i, combo in enumerate(combinations):
     # Apply wide_factor if present
     if 'wide_factor' in params:
         wf = params['wide_factor']
+
+        ip['beam']['size'] *= wf
         ip['beam_shaper']['size'] *= wf
         ip['L1']['size'] *= wf
         ip['L2']['size'] *= wf
-        ip['beam']['size'] *= wf
+        ip['O1']['size'] *= wf
+        ip['O2']['size'] *= wf
+        ip['A1']['size'] *= wf
+        ip['A2']['size'] *= wf 
+        ip['simulation']['propsize'] *= wf
     else:
         wf = 1.0  # fallback for dependent parameters
 
-    # Apply O_mult if present
-    if 'O_mult' in params:
-        Om = params['O_mult']
-        ip['O1']['size'] *= wf * Om
-        ip['O2']['size'] *= wf * Om
-    elif 'wide_factor' in params:
-        ip['O1']['size'] *= wf
-        ip['O2']['size'] *= wf
-
-    # Apply A_mult if present
-    if 'A_mult' in params:
-        Am = params['A_mult']
-        ip['A1']['size'] *= wf * Am
-        ip['A2']['size'] *= wf * Am
-    elif 'wide_factor' in params:
-        ip['A1']['size'] *= wf
-        ip['A2']['size'] *= wf
 
     # Apply O2in if present
     if 'O2_size' in params:

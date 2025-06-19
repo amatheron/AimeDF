@@ -275,22 +275,22 @@ def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
         mu.figure()
     return par2
 
-
+####################### ADDS THE DEFECTS FOR CRLS FROM CELESTRE AND SEIBOTH ################
 def do_phaseplate(el_dict,params,debug=0):
     assert el_dict['type']=='phaseplate'
-    defect=el_dict['defect']
+    defect = el_dict['defect']
 
-    E=params['photon_energy']
-    N=params['N']
-    pxsize=params['pxsize']
-    num=el_dict['num']
-    N2=int(N/2)
-    mx=N2*pxsize
+    E = params['photon_energy']
+    N = params['N']
+    pxsize = params['pxsize']
+    num = el_dict['num']
+    N2 = int(N/2)
+    mx = N2*pxsize
 
-    Na=np.arange(-N2,N2)*pxsize
-    xm,ym=np.meshgrid(Na,Na)
-    r=((xm**2)+(ym**2))**0.5
-    thickness=np.zeros([N,N])
+    Na = np.arange(-N2,N2)*pxsize
+    xm,ym = np.meshgrid(Na,Na)
+    r = ((xm**2)+(ym**2))**0.5
+    thickness = np.zeros([N,N])
 
     if 'seiboth' in defect:
         fia=ascii.read(f'{HOME}/Seiboth_Fig4')
@@ -302,33 +302,31 @@ def do_phaseplate(el_dict,params,debug=0):
             plt.xlabel('radial position [μm]')
             plt.ylabel('deformation [μm]')
 
-        img=np.zeros([N,N])
+        img = np.zeros([N,N])
         for xi,x in enumerate(Na):
             for yi,y in enumerate(Na):
-                rh=r[xi,yi]/um
-                deformation=np.interp(rh,fiax,fiay)
-                img[xi,yi]=deformation
+                rh = r[xi,yi] / um
+                deformation = np.interp(rh,fiax,fiay)
+                img[xi,yi] = deformation
         thickness+=img*um
 
     if 'celestre' in defect:
         image = Image.open(f'{HOME}/Celestre_Fig8.png')
-        image=image.resize((N,N))
+        image = image.resize((N,N))
         im = np.array(image)[:,:,0]
-        im=im/255*24 #from values to μm in figure
+        im = im/255*24 #from values to μm in figure
         im/=11 #to go to one lens from 11
         if 0:
             mu.figure()
             plt.imshow(im)
             plt.colorbar()
-#            plt.xlabel('radial position [μm]')
-            #plt.ylabel('deformation [μm]')
         thickness+=im*um
-#        img=img*um
 
-    thickness=thickness*num
-    elem='Be'
-    beta,delta,k,thickness_to_phaseshift=get_n(elem,E)
-    phaseshiftmap=thickness*thickness_to_phaseshift#*-1
+    ############### Multiplying the phase defect by the number of lenses #########
+    thickness = thickness * num
+    elem = 'Be'
+    beta,delta,k,thickness_to_phaseshift = get_n(elem,E)
+    phaseshiftmap = thickness * thickness_to_phaseshift
 
     if 0:
         mu.figure(10,5)
@@ -345,6 +343,7 @@ def do_phaseplate(el_dict,params,debug=0):
         ex=[-mx/um,mx/um,-mx/um,mx/um]
         plt.imshow(phaseshiftmap,extent=ex,cmap=rofl.cmap())
         plt.colorbar()
+        
     return phaseshiftmap
 
 
@@ -907,33 +906,30 @@ shapes available:
 '''
 
 def doap(pars,params=[],debug=0,return_thickness=0):
-    axap=params['ax_apertures']
-    E=params['photon_energy']
-    N=params['N']
-
-    N2=int(N/2)
-    typ=pars['shape']
+    axap = params['ax_apertures']
+    E = params['photon_energy']
+    N = params['N']
+    N2 = int(N/2)
+    typ = pars['shape']
 
     if typ in ['square','rectangle','wire','gaussian']:
-        transmissionmap=get_aperture_transmission_map(pars,params,debug)
-        phaseshiftmap=transmissionmap*0
-        thicknessmap=transmissionmap*0
+        transmissionmap = get_aperture_transmission_map(pars,params,debug)
+        phaseshiftmap = transmissionmap * 0
+        thicknessmap = transmissionmap * 0
     else:
         thicknessmap = get_aperture_thickness_map(pars,params,debug)
 
 
     #General modifications of thickness map
-        if yamlval('randomizeA',pars):            #adding random defects.
-            #'randomizeA' is the maximal amplitude of the noise [m] . The spatial frequency is just given by pixel sizera
-            ra=float(yamlval('randomizeA',pars))
-            rand=np.random.random((N,N))*ra - ra/2
-            img2=thicknessmap+rand
-            img2[thicknessmap==0]=0
-            img2[thicknessmap<=0]=0
-            thicknessmap=img2
+        if yamlval('randomizeA',pars):  # Adding random defects. 'RandomizeA' is the maximal amplitude of the noise [m]. The spatial frequency is just given by pixel size
+            ra = float(yamlval('randomizeA',pars))
+            rand = np.random.random((N,N))*ra - ra/2
+            img2 = thicknessmap+rand
+            img2[thicknessmap==0] = 0
+            img2[thicknessmap<=0] = 0
+            thicknessmap = img2
             print('randomized')
-        if yamlval('randomizeB',pars):            #adding random defects. in better way
-            #'randomizeB' is the maximal radius of sphere added to the material[m].
+        if yamlval('randomizeB',pars): # Adding random defects. in better way. 'RandomizeB' is the maximal radius of sphere added to the material[m].
             maxsize=float(yamlval('randomizeB',pars))
             density=float(yamlval('density',pars,2))
             print('Density: ',density)
@@ -1213,34 +1209,34 @@ def doit(params,elements):
                 EE=[flowpos,flowname,fe]
                 elements.append(EE)
         if auto_flow:
-#            ffdir=project_dir+'/flow_figs/'+fn2+'/'
             ffdir=params['projectdir']+'flow_figs/'+params['filename']+'_auto/'
             mu.mkdir(ffdir,0)
-    elements=sort_elements(elements)
-    wavelength=12398/params['photon_energy']/10*nm
-    integ=0
-    F=Begin(params['propsize'],wavelength,N,dtype=dtype)
-    propsize=params['propsize']
-    F=GaussBeam(F, params['beamsize'],x_shift=params['gauss_x_shift'],tx=params['gauss_x_tilt'])
-    F_pos=elements[0][0] #the starting position of my beamline
-    figs_to_save=yamlval('figs_to_save',params,[])
-    figs_to_export=yamlval('figs_to_export',params,[])
+    elements = sort_elements(elements)
+    wavelength = 12398/params['photon_energy']/10*nm
+    integ = 0
+
+    ######## Begin simulation : initialize the beam ######
+    F = Begin(params['propsize'],wavelength,N,dtype=dtype)
+    propsize = params['propsize']
+    F = GaussBeam(F, params['beamsize'],x_shift=params['gauss_x_shift'],tx=params['gauss_x_tilt'])
+    F_pos = elements[0][0] #the starting position of my beamline
+    
+    figs_to_save = yamlval('figs_to_save',params,[])
+    figs_to_export = yamlval('figs_to_export',params,[])
     if 'edge_damping' in params:
         do_edge_damping=1
         edge_damping_aperture = do_edge_damping_aperture(params)
     else:
         do_edge_damping=0
 
-    figs={}
-    export={}
+    figs = {}
+    export = {}
 
-    pi=params['fig_start']
-    #trans=np.zeros(np.shape(Elements)[0]+1)
-    trans=np.zeros(len(elements)+1)*np.nan
+    pi = params['fig_start']
+    trans = np.zeros(len(elements)+1)*np.nan
     numel=len(elements)
     intensities={}
     N2=int(N/2)
-    #Na=np.arange(-N2,N2)*params['pxsize']/um
     Na=(np.arange(N)-0.5*N)*params['pxsize']/um
     profi=0
     save_parts=yamlval('save_parts',params,0)
@@ -1252,14 +1248,17 @@ def doit(params,elements):
                      "reg_parabola_focus": None
                      }
     #Simon end----
-    for ei,E in enumerate(elements):
-        z=E[0]
-        el_name=E[1]  #el
-        el_dict=E[2] #aperture
-        print('{:} (elem.n.{:.0f})   ###'.format(el_name,ei))
-    #    mu.tick('step {:.0f}: {:}'.format(ei,el))
 
-        el_type=el_dict['type']
+    ############## Starting the loop over elements ##########
+    for ei,E in enumerate(elements):
+        z = E[0]          #position of the element
+        el_name = E[1]    #element name
+        el_dict = E[2]    #element aperture
+        el_type = el_dict['type']
+        
+        print('{:} (elem.n.{:.0f})   ###'.format(el_name,ei))
+
+        #### If the element is not inserted, skip it #######
         if el_type=='blank':
             pi+=1
         if 'off' in el_type:
@@ -1270,26 +1269,28 @@ def doit(params,elements):
             print('  skipping because out')
             continue
 
-        delta_z=z-F_pos
-    #First: propagate until the element
+        
+        
+    ####### Propagation from the current field position to the element position #######
+        delta_z = z-F_pos
+        
         if delta_z==0:
             print('skipping zero propagation')
         else:
             #Simon start----
-            simple=1
+            simple = 1
             if not reg_prop_dict["regularized_propagation"]: #normal propagation
                 if method=='fresnel':
                     F=Fresnel(delta_z,F)
                 elif method=='FFT':
                     F=Forvard(delta_z,F)
-           #     elif method=='direct':
-             #       F=Forward(delta_z,propsize,N,F)
                 else:
                     print("Beam did not propagate, even though it should have.")
             else: #regularized propagation
-                F = rp.Forvard_reg(F, reg_prop_dict["reg_parabola_focus"],
-                                   delta_z, False)
-            F_pos=z
+                F = rp.Forvard_reg(F, reg_prop_dict["reg_parabola_focus"], delta_z, False)
+                
+            F_pos = z #updating the field position F_pos to the element's position z
+            
             params['pxsize'] = F.siz/N #update pixel size
             propsize = F.siz #update physical size of grid
             params['propsize'] = propsize
@@ -1306,9 +1307,11 @@ def doit(params,elements):
         if ZoomFactor!=1:
             lab=lab+' ({:.0f}x)'.format(ZoomFactor)
 
-    #Second: do the element
-        def_do_plot=1
-        #Simon start----
+     ################## Apply the element to the beam ##############
+        
+        def_do_plot = 1
+        
+        ######## REG and DEREG elements ########
         if el_type == 'reg':  # regularize propagation
             reg_prop_dict["regularized_propagation"] = True
             if 'reg-by-f' in el_dict:
@@ -1327,12 +1330,10 @@ def doit(params,elements):
                 F = Lens(F, reg_prop_dict["reg_parabola_focus"])
                 
             def_do_plot = 0
-        #Simon end----
+        
 
-
-        ##extracgin regularizign for lens outside of lens
         if "reg-by-f" in el_dict:
-            f=el_dict['reg-by-f']
+            f = el_dict['reg-by-f']
             if reg_prop_dict["reg_parabola_focus"] is None:
                 reg_prop_dict["reg_parabola_focus"] = f
                 reg_prop_dict["regularized_propagation"] = True
@@ -1354,35 +1355,7 @@ def doit(params,elements):
                     print(f"..but still regularizing by CRL in {F_pos} by value {f}")
 
 
-        #if 'lens' in el_type:
-        #    #Simon start----
-        #    ideal=yamlval('ideal',el_dict,1)
-        #    if ideal:
-        #        f=el_dict['f']
-        #        if "reg" in el_type:
-        #            if reg_prop_dict["reg_parabola_focus"] is None:
-        #                reg_prop_dict["reg_parabola_focus"] = f
-        #                reg_prop_dict["regularized_propagation"] = True
-        #                print(f"Regularizing by CRL in {F_pos} by value {f}")
-        #            else:
-        #                #for inserting second, that images the focus made by first CRL
-        #                if reg_prop_dict["regularized_propagation"] == True:
-        #                    f2_tmp = f
-        #                    #thin lens formula (zobrazovaci rovnice), where focus is the object
-        #                    reg_new_tmp = 1.0/(1.0/f2_tmp + 1.0/reg_prop_dict["reg_parabola_focus"])
-        #                    reg_prop_dict["reg_parabola_focus"] = reg_new_tmp
-        #                    print("Re-regularizing by CRL")
-        #                else:
-        #                    #I dont know if we ever need this, so this is just a guess of
-        #                    #how it might look
-        #                    reg_prop_dict["reg_parabola_focus"] = f
-        #                    reg_prop_dict["regularized_propagation"] = True
-        #                    print("Unexpected regularizing by CRL")
-        #                    print(f"..but still regularizing by CRL in {F_pos} by value {f}")
-        #        else:
-        #            F=Lens(f,0,0,F)
-        #            #Simon end----
-
+      ############# LENS ELEMENT ###############
         if 'lens' in el_type:
             ideal = yamlval('ideal', el_dict, 1)
             if ideal:
@@ -1408,57 +1381,57 @@ def doit(params,elements):
                             print("Unexpected regularizing by CRL")
                             print(f"..but still regularizing by CRL in {F_pos} by value {f}")
                 else:
-                    F=Lens(f,0,0,F)
-                
+                    F = Lens(f,0,0,F)
 
-
-                    
-            aperture=yamlval('size',el_dict,0)
+            ####### APERTURE OF THE LENS ########
+            aperture = yamlval('size',el_dict,0)
             if aperture==0 and 'CRL4' in el_type:
-                aperture=400e-6
+                aperture = 400e-6
 
             if aperture>0: #aperture
-                ap_dict={}
-                ap_dict['elem']='Hf'
-                ap_dict['thickness']=0.0001
-                ap_dict['shape']='circle'
-                ap_dict['size']=aperture
-                ap_dict['invert']=1
-                tmap,phasemap=doap(ap_dict,params)
-                F=MultIntensity(tmap,F)
+                ap_dict = {}
+                ap_dict['elem'] = 'Hf'
+                ap_dict['thickness'] = 0.0001
+                ap_dict['shape'] = 'circle'
+                ap_dict['size'] = aperture
+                ap_dict['invert'] = 1
+                tmap,phasemap = doap(ap_dict,params)   # creating the transmission and phase map of the lens aperture
+                F = MultIntensity(tmap,F)              # multiplying intensity of the field by the lens aperture
 
-            if 'CRL4' in el_type: #creating all the decorations:
-                Lroc=yamlval('roc',el_dict,5.0e-5)
-                ab_dict={}
-                ab_dict['elem']='Be'
-                ab_dict['minr0']=0
-                ab_dict['shape']='parabolic_lens'
-                ab_dict['size']=aperture
-                ab_dict['roc']=Lroc
-                ab_dict['double_sided']=1
-                ab_dict['num_lenses']=yamlval('num_lenses',el_dict,1)
-                tmap2,phasemap=doap(ab_dict,params,debug=0)
-                F=MultIntensity(tmap*tmap2,F)
+            ############# CRL4 default parameters ############
+            if 'CRL4' in el_type: 
+                Lroc = yamlval('roc',el_dict,5.0e-5) #radius of curvature
+                ab_dict = {} #absorption dictionnary
+                ab_dict['elem'] = 'Be'
+                ab_dict['minr0'] = 0
+                ab_dict['shape'] = 'parabolic_lens'
+                ab_dict['size'] = aperture
+                ab_dict['roc'] = Lroc
+                ab_dict['double_sided'] = 1 #parabolic shape on both sides
+                ab_dict['num_lenses'] = yamlval('num_lenses',el_dict,1)
+                tmap2,phasemap = doap(ab_dict,params,debug=0)
+                F = MultIntensity(tmap*tmap2,F)
 
-                if not ideal:  #tohle prostě nefunguje...
-                    F=MultPhase(phasemap,F)
+                if not ideal:  
+                    F = MultPhase(phasemap,F)
                     print('doing real lens')
                     
             if yamlval('celestre',el_dict,1):
-                cel_dict={}
-                cel_dict['defect']='celestre'
-                cel_dict['type']='phaseplate'
-                cel_dict['num']=yamlval('num_lenses',el_dict,1)
-                phaseshiftmap=do_phaseplate(cel_dict,params)
-                F=MultPhase(phaseshiftmap,F)
+                cel_dict = {}
+                cel_dict['defect'] = 'celestre'
+                cel_dict['type'] = 'phaseplate'
+                cel_dict['num'] = yamlval('num_lenses',el_dict,1)
+                phaseshiftmap = do_phaseplate(cel_dict,params)
+                F = MultPhase(phaseshiftmap,F)
+                
             if yamlval('seiboth',el_dict,1):
-                seib_dict={}
-                seib_dict['defect']='seiboth'
-                seib_dict['type']='phaseplate'
-                seib_dict['num']=yamlval('num_lenses',el_dict,1)
-              #  seib_dict['num']=1
-                phaseshiftmap=do_phaseplate(seib_dict,params)
-                F=MultPhase(phaseshiftmap,F)
+                seib_dict = {}
+                seib_dict['defect'] = 'seiboth'
+                seib_dict['type'] = 'phaseplate'
+                seib_dict['num'] = yamlval('num_lenses',el_dict,1)
+                phaseshiftmap = do_phaseplate(seib_dict,params)
+                F = MultPhase(phaseshiftmap,F)
+                
             if yamlval('scatterer',el_dict,0):
                 sc_dict={}
                 if 0: #first attemtp
@@ -1470,86 +1443,86 @@ def doit(params,elements):
                     sc_dict['thickness']=2e-6
                     sc_dict['elem']='W'
                 if 1: #second one
-                    sc_dict['randomizeB']=yamlval('lens_randomize_r',params,20.e-6)
-                    sc_dict['type']='aperture'
-                    sc_dict['shape']='circle'
-                    sc_dict['size']=aperture
-                    default_k=3 #3 comes from 5348
-                    default_k=0.02 #3 comes from 6436 ....10.6.2025: this seems too low!!
-                    k=yamlval('lens_randomize_k',params,default_k)
+                    sc_dict['randomizeB'] = yamlval('lens_randomize_r',params,20.e-6)
+                    sc_dict['type'] = 'aperture'
+                    sc_dict['shape'] = 'circle'
+                    sc_dict['size'] = aperture
+                    default_k = 3 #3 comes from 5348
+                    default_k = 0.02 #3 comes from 6436 ....10.6.2025: this seems too low!!
+                    k = yamlval('lens_randomize_k',params,default_k)
                     if 'scatterer_k' in el_dict:
-                            k=el_dict['scatterer_k']
-                    sc_dict['density']=k*yamlval('num_lenses',el_dict,1)
-                    sc_dict['thickness']=3*yamlval('lens_randomize_r',params,20.e-6)
-                    sc_dict['elem']=yamlval('lens_randomize_elem',params,'Ti')
+                            k = el_dict['scatterer_k']
+                    sc_dict['density'] = k*yamlval('num_lenses',el_dict,1)
+                    sc_dict['thickness'] = 3*yamlval('lens_randomize_r',params,20.e-6)
+                    sc_dict['elem'] = yamlval('lens_randomize_elem',params,'Ti')
+                    
+                Ii1 = (np.nansum(Intensity(0,F)))
+                tmap3,phasemap = doap(sc_dict,params,debug=0)
+                F = MultIntensity(tmap3,F)
+                F = MultPhase(phasemap,F)
+                Ii2 = (np.nansum(Intensity(0,F)))
+                loss_on_scatterer = Ii2/Ii1
+                params['transmission_of_scatterer_'+el_name] = loss_on_scatterer
 
-
-                Ii1=(np.nansum(Intensity(0,F)))
-                tmap3,phasemap=doap(sc_dict,params,debug=0)
-                F=MultIntensity(tmap3,F)
-                F=MultPhase(phasemap,F)
-                Ii2=(np.nansum(Intensity(0,F)))
-                loss_on_scatterer=Ii2/Ii1
-                params['transmission_of_scatterer_'+el_name]=loss_on_scatterer
-
+        ############# ELEMENT : PHASE PLATE ###########
         if el_type=='phaseplate':
             phaseshiftmap=do_phaseplate(el_dict,params)
             F=MultPhase(phaseshiftmap,F)
 
+        ############# ELEMENT : PURE APERTURE ###########
         if 'aperture' in el_type:
             if len(el_dict)==0:
-                do_nothing=1
-            num=yamlval('num',el_dict,1)
-            merged=1
+                do_nothing = 1
+            num = yamlval('num',el_dict,1)
+            merged = 1
             if merged:
-                bt=np.zeros((N,N))+1.
-                ph=np.zeros((N,N))
+                bt = np.zeros((N,N))+1.
+                ph = np.zeros((N,N))
                 for i in np.arange(num):
-                    tmap,phasemap=doap(el_dict,params)
-                    bt=bt*tmap
+                    tmap,phasemap = doap(el_dict,params)
+                    bt = bt*tmap
                     ph+=phasemap
                 if yamlval('do_intensity',el_dict,1):
-                    F=MultIntensity(bt,F)
+                    F = MultIntensity(bt,F)
                 if yamlval('do_phaseshift',el_dict,1):
-                    F=MultPhase(ph,F)
+                    F = MultPhase(ph,F)
             else:
                 for i in np.arange(num):
                     tmap,phasemap=doap(el_dict,params)
                     if yamlval('do_intensity',el_dict,1):
-                        F=MultIntensity(tmap,F)
+                        F = MultIntensity(tmap,F)
                     if yamlval('do_phaseshift',el_dict,1):
-                        F=MultPhase(phasemap,F)
+                        F = MultPhase(phasemap,F)
 
 
 
-#edge damping
+        ############# EDGE DAMPING ###########
         if do_edge_damping:
             F=MultIntensity(edge_damping_aperture,F)
-
-        do_plot=yamlval('plot',el_dict,def_do_plot)
-        plot_phase=yamlval('plot_phase',params,0)
         
         ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
+
+        do_plot = yamlval('plot',el_dict,def_do_plot)
+        plot_phase = yamlval('plot_phase',params,0)
+
+        
         if plot_phase:
-            I=Phase(F)
+            I = Phase(F)
             print(np.max(I))
             print("plotting phase instead of intensity")
             if 0:
-                # %%
                 mu.figure()
-                #plt.imshow(I)
                 plt.imshow(ph)
                 plt.colorbar()
-#                plt.clim(0.55,0.65)
- # %%
         else:
-            I=Intensity(0,F)
+            I = Intensity(0,F)
+            
         ####################################################################################
         
-        letts=['a','b','c','d','e','f','g','h','i']
-        Iint=(np.nansum(I))*propsize**2
-        intensities[el_name]=Iint
-        logg=yamlval('figs_log',params,1)
+        letts = ['a','b','c','d','e','f','g','h','i']
+        Iint = (np.nansum(I))*propsize**2
+        intensities[el_name] = Iint
+        logg = yamlval('figs_log',params,1)
 
         ########################### CALCULATION OF THE MAXIMUM AND INTEGRAL OF THE IMAGE #############
         #norms=[0,0] initially (1rst passage in the loop). Then, norms=[integral, sum] normalized.
@@ -1558,7 +1531,6 @@ def doit(params,elements):
         if el_name.startswith(tuple(figs_to_save)):
 
             print('Saving figure: {:}'.format(el_name))
-#            imS=im.astype('float16')
             figs[el_name]=[im,ei,propsize/ZoomFactor,z]
 
             if np.mod(ei,20)==0:
@@ -1566,7 +1538,6 @@ def doit(params,elements):
                 if np.size(figs)>0:
                     pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
                     mu.dumpPickle(figs, pkl_name)
-                    #mu.dumpPickle(figs,params['projectdir']+'pickles/'+params['filename']+'_figs')
 
         if auto_flow and 'flow' in el_name:
             fi=int(el_name.split('_')[1])
@@ -1866,7 +1837,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
     ################## PLOT OF THE MAIN FLOW FIG #####################
     mu.figure(16,9)
     print(cl)
-    linearize=0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
+    linearize = 0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
     if linearize:
         #mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1,xtics_spacing=1)
         mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1) #,xtics_spacing=1
@@ -1879,7 +1850,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
         #plt.yticks(np.arange(-gyax_def[1],-gyax_def[0],50))
         plt.yticks(np.arange(0,np.size(gyax)+1,50))
     else:
-        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl)
+        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=log,ticks=0,cl=cl)
     profile=mu.normalize(propsizes)*np.max(gyax)
 #%% %decorations
     maxy=np.min(gyax)
