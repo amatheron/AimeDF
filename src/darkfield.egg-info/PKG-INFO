@@ -2,7 +2,7 @@ Metadata-Version: 2.4
 Name: darkfield
 Version: 0.1.0
 Summary: Calculate darkfield.
-Requires-Python: >=3.12
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: numpy
 Requires-Dist: scipy
