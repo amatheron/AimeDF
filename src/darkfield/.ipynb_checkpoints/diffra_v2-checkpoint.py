@@ -9,6 +9,8 @@ from astropy.io import ascii
 from PIL import Image
 from scipy import signal
 
+from pathlib import Path
+
 #import darkfield.regularized_propagation as rp
 import darkfield.rossendorfer_farbenliste as rofl
 import darkfield.mmmUtils_v2 as mu
@@ -277,6 +279,11 @@ def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
 
 ####################### ADDS THE DEFECTS FOR CRLS FROM CELESTRE AND SEIBOTH ################
 def do_phaseplate(el_dict,params,debug=0):
+
+    from pathlib import Path #in order for the code to work on laptop and Cluster
+    basepath = Path(params["projectdir"]).parent  #in order for the code to work on laptop and Cluster
+
+
     assert el_dict['type']=='phaseplate'
     defect = el_dict['defect']
 
@@ -293,7 +300,8 @@ def do_phaseplate(el_dict,params,debug=0):
     thickness = np.zeros([N,N])
 
     if 'seiboth' in defect:
-        fia=ascii.read(f'{HOME}/Seiboth_Fig4')
+        #fia=ascii.read(f'{HOME}/Seiboth_Fig4') #ancienne version ou la version laptop n'est pas compatible
+        fia = ascii.read(basepath / "Seiboth_Fig4")
         fiax=fia['col1']
         fiay=fia['col2']
         if 0:
@@ -311,7 +319,8 @@ def do_phaseplate(el_dict,params,debug=0):
         thickness+=img*um
 
     if 'celestre' in defect:
-        image = Image.open(f'{HOME}/Celestre_Fig8.png')
+        #image = Image.open(f'{HOME}/Celestre_Fig8.png') #ancienne version ou la version laptop n'est pas compatible
+        image = Image.open(basepath / "Celestre_Fig8.png")
         image = image.resize((N,N))
         im = np.array(image)[:,:,0]
         im = im/255*24 #from values to μm in figure
@@ -1171,6 +1180,9 @@ def sort_elements(ele,debug=0):
 
 
 def doit(params,elements):
+
+    projectdir = Path(params.get("projectdir", "."))
+    
     #method=params['method']
     mu.clear_times()
     mu.tick()
@@ -1209,7 +1221,8 @@ def doit(params,elements):
                 EE=[flowpos,flowname,fe]
                 elements.append(EE)
         if auto_flow:
-            ffdir=params['projectdir']+'flow_figs/'+params['filename']+'_auto/'
+            #ffdir=params['projectdir']+'flow_figs/'+params['filename']+'_auto/' #ancienne version avant compatibilite avec cluster et laptop
+            ffdir = Path(params["projectdir"]) / "flow_figs" / f"{params['filename']}_auto"
             mu.mkdir(ffdir,0)
     elements = sort_elements(elements)
     wavelength = 12398/params['photon_energy']/10*nm
@@ -1400,14 +1413,14 @@ def doit(params,elements):
 
             ############# CRL4 default parameters ############
             if 'CRL4' in el_type: 
-                Lroc = yamlval('roc',el_dict,5.0e-5)
-                ab_dict = {}
+                Lroc = yamlval('roc',el_dict,5.0e-5) #radius of curvature
+                ab_dict = {} #absorption dictionnary
                 ab_dict['elem'] = 'Be'
                 ab_dict['minr0'] = 0
                 ab_dict['shape'] = 'parabolic_lens'
                 ab_dict['size'] = aperture
                 ab_dict['roc'] = Lroc
-                ab_dict['double_sided'] = 1
+                ab_dict['double_sided'] = 1 #parabolic shape on both sides
                 ab_dict['num_lenses'] = yamlval('num_lenses',el_dict,1)
                 tmap2,phasemap = doap(ab_dict,params,debug=0)
                 F = MultIntensity(tmap*tmap2,F)
@@ -1536,8 +1549,9 @@ def doit(params,elements):
             if np.mod(ei,20)==0:
                 print('Dumping figures')
                 if np.size(figs)>0:
-                    pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
-                    mu.dumpPickle(figs, pkl_name)
+                    #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
+                    pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
+                    mu.dumpPickle(figs, str(pkl_name))
 
         if auto_flow and 'flow' in el_name:
             fi=int(el_name.split('_')[1])
@@ -1661,12 +1675,14 @@ def doit(params,elements):
 #    plt.legend()
     if np.size(figs)>0:
         #mu.dumpPickle(figs,params['projectdir']+'pickles/'+params['filename']+'_figs')
-        pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
-        mu.dumpPickle(figs, pkl_name)
+        #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
+        pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
+        mu.dumpPickle(figs, str(pkl_name))
     if len(export)>0:
         #mu.dumpPickle(export,params['projectdir']+'pickles/'+params['filename']+'_export')
-        pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs"
-        mu.dumpPickle(figs, pkl_name)
+        #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
+        pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
+        mu.dumpPickle(figs, str(pkl_name))
 
     return params,trans,figs
 
@@ -1693,6 +1709,7 @@ def yamlval(key,ip,default=0):
 
 
 def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type='center',log=1,xl=None,flow_figs=0,flow_plot_crange=1e-5):
+    from pathlib import Path
     #gyax=np.arange(-50,50,1) #μm
     #vertical_type='integral'
     #vertical_type='vert-center'
@@ -1702,10 +1719,20 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
     gyax=np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
     fn=str(file)+'_figs'
     fns=fn
-    pic = mu.loadPickle('./'+project_dir+'/pickles/'+fn+'.pickle',strict=1) #loading the images
-    p2 = fn.replace('figs','res')
-    p2 = p2.replace('export','res')
-    res = mu.loadPickle('./'+project_dir+'/pickles/'+p2+'.pickle') #loading the general parameters
+    #pic = mu.loadPickle('./'+project_dir+'/pickles/'+fn+'.pickle',strict=1) #loading the images
+
+    pic_path = Path(project_dir) / 'pickles' / f'{fn}.pickle'
+    pic = mu.loadPickle(str(pic_path), strict=1)
+    
+    #p2 = fn.replace('figs','res')
+    #p2 = p2.replace('export','res')
+    #res = mu.loadPickle('./'+project_dir+'/pickles/'+p2+'.pickle') #loading the general parameters
+
+    p2 = fn.replace('figs', 'res').replace('export', 'res')
+    res_path = Path(project_dir) / 'pickles' / f'{p2}.pickle'
+    res = mu.loadPickle(str(res_path))
+
+
     partial=(res==0)
     fn2=fns[:-5]
     l=fn2
@@ -1907,7 +1934,9 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type
     roi=13
     plt.plot([zax[-1],zax[-1]],[-roi/2,roi/2],'w-',lw=5)
     plt.title(l2)
-    mu.savefig('./'+project_dir+'/flows/flow_{:}_{:}'.format(l,vertical_type))
+    #mu.savefig('./'+project_dir+'/flows/flow_{:}_{:}'.format(l,vertical_type)) #ancienne version qui ne supportait pas la version laptop.
+    flow_path = Path(project_dir) / 'flows' / f'flow_{l}_{vertical_type}'
+    mu.savefig(str(flow_path))
     return params,res
 
 

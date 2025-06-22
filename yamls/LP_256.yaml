@@ -50,16 +50,16 @@ dereg1:
   position: -1
   type: dereg
   plot: 1
+
 TCSlit:
   in: 1
-  position: -0.01
-  size: 8.0e-05
-  invert: 1
-  elem: Au
-  thickness: 2.0e-05
-  zoom: 1
-  type: aperture
+  elem: W
+  r: 0.0002
   shape: wireslit
+  size: 60.0e-06
+  position: -0.01
+  type: aperture
+
 TCC:
   type: imager
   position: 0

@@ -52,8 +52,23 @@ forcescatter = 0
 #project = None
 
 
-yaml_folder = Path('/home/yu79deg/darkfield_p5438/yamls') #hardcoded for simplicity
-projectdir = Path('/home/yu79deg/darkfield_p5438/Aime') #hardcoded for simplicity
+#yaml_folder = Path('/home/yu79deg/darkfield_p5438/yamls') #hardcoded for simplicity
+#projectdir = Path('/home/yu79deg/darkfield_p5438/Aime') #hardcoded for simplicity
+
+#basepath = Path('/home/yu79deg/darkfield_p5438')  # Cluster
+# basepath = Path('/Users/aime/.../darkfield_p5438')  # Laptop
+
+
+cluster_path = Path("/home/yu79deg/darkfield_p5438")
+local_path = Path("/Users/aime/Library/CloudStorage/Dropbox/QED_at_jena/Backup_codes/Environnement_DF_20Juin/darkfield_p5438")
+
+if cluster_path.exists():
+    basepath = cluster_path
+else:
+    basepath = local_path
+
+yaml_folder = basepath / "yamls"
+projectdir = basepath / "Aime"
 
 yamlfile = yaml_folder / args.yaml
 
@@ -175,6 +190,8 @@ for positive_signal_simulation in positive_signal_simulations:
     params['profiles_subfig'] = 1
     params['ax_apertures'] = None
 
+    params['projectdir'] = projectdir  
+
     params, trans, figs = df.doit(params, Elements) ########## RUN THE SIMULATION ########
 
     axInfo = plt.subplot(params['fig_rows'], params['fig_cols'], 2)
@@ -230,7 +247,14 @@ for positive_signal_simulation in positive_signal_simulations:
         flow_figs = 0
         gyax = df.yamlval('flow_plot_gyax', ip['simulation'], [-200, 1000, 10])
         clim = df.yamlval('flow_plot_clim', ip['simulation'], [1e-11, 50])
-        print(str(projectdir.relative_to('/home/yu79deg')), fn )
+        #print(str(projectdir.relative_to('/home/yu79deg')), fn )
+
+        if "yu79deg" in str(projectdir):
+            rel_path = projectdir.relative_to("/home/yu79deg")
+        else:
+            rel_path = projectdir  # ou projectdir.name
+        print(str(rel_path), fn)
+        
         df.flow_plot(str(projectdir), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
         #df.flow_plot(str(projectdir.relative_to('/home/yu79deg')), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
 

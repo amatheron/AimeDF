@@ -25,7 +25,7 @@ from pathlib import Path
 #HOME = '/home/yu79deg/darkfield_p5438/'
 
 # Template and output setup
-yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_238.yaml' #name of the template yaml file that we modify
+yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_277.yaml' #name of the template yaml file that we modify
 outdir = '/home/yu79deg/darkfield_p5438/yamls' # folder where it will save the generate yamls
 os.makedirs(outdir, exist_ok=True)
 
@@ -39,7 +39,7 @@ os.makedirs(outdir, exist_ok=True)
 #}
 
 param_dict = {
-    'wide_factor': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.2, 1.4, 1.8, 2, 2.4, 2.8], 
+    'wide_factor': [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.2, 1.4], 
 }
 
 ####################################################
