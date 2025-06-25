@@ -25,7 +25,7 @@ from pathlib import Path
 #HOME = '/home/yu79deg/darkfield_p5438/'
 
 # Template and output setup
-yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_127.yaml' #name of the template yaml file that we modify
+yaml_template = '/home/yu79deg/darkfield_p5438/yamls/LP_289.yaml' #name of the template yaml file that we modify
 outdir = '/home/yu79deg/darkfield_p5438/yamls' # folder where it will save the generate yamls
 os.makedirs(outdir, exist_ok=True)
 
@@ -39,7 +39,7 @@ os.makedirs(outdir, exist_ok=True)
 #}
 
 param_dict = {
-    'PH_size': [130,120,110,100,90,80,70,60,50,40,30,20,10,0], 
+    'TCSlit_size': [0,5,10,20,30,40,50,80,100], 
 }
 
 ####################################################
@@ -69,30 +69,19 @@ for i, combo in enumerate(combinations):
     # Apply wide_factor if present
     if 'wide_factor' in params:
         wf = params['wide_factor']
+
+        ip['beam']['size'] *= wf
         ip['beam_shaper']['size'] *= wf
         ip['L1']['size'] *= wf
         ip['L2']['size'] *= wf
-        ip['beam']['size'] *= wf
+        ip['O1']['size'] *= wf
+        ip['O2']['size'] *= wf
+        ip['A1']['size'] *= wf
+        ip['A2']['size'] *= wf 
+        ip['simulation']['propsize'] *= wf
     else:
         wf = 1.0  # fallback for dependent parameters
 
-    # Apply O_mult if present
-    if 'O_mult' in params:
-        Om = params['O_mult']
-        ip['O1']['size'] *= wf * Om
-        ip['O2']['size'] *= wf * Om
-    elif 'wide_factor' in params:
-        ip['O1']['size'] *= wf
-        ip['O2']['size'] *= wf
-
-    # Apply A_mult if present
-    if 'A_mult' in params:
-        Am = params['A_mult']
-        ip['A1']['size'] *= wf * Am
-        ip['A2']['size'] *= wf * Am
-    elif 'wide_factor' in params:
-        ip['A1']['size'] *= wf
-        ip['A2']['size'] *= wf
 
     # Apply O2in if present
     if 'O2_size' in params:
@@ -111,7 +100,30 @@ for i, combo in enumerate(combinations):
             ip['PH']['in'] = 1
             ip['PH']['size'] = PH_s * 1e-6
 
+    if 'A1_size' in params:
+        A1_s = params['A1_size']
+        if A1_s==0:
+            ip['A1']['in'] = 0 #if the size of A1 = 0 we put it out
+        else:
+            ip['A1']['in'] = 1
+            ip['A1']['size'] = A1_s * 1e-6
 
+    if 'defect_amplitude' in params:
+        defect_amp = params['defect_amplitude']        
+        ip['A1']['defect_amplitude'] = defect_amp * 1e-6
+
+
+    if 'TCSlit_size' in params:
+        TCslit_s = params['TCSlit_size']
+        if TCslit_s==0:
+            ip['TCSlit']['in'] = 0 #if the size of O2 = 0 we put it out
+        else:
+            ip['TCSlit']['in'] = 1 
+            ip['TCSlit']['size'] = TCslit_s * 1e-6
+        
+        
+
+            
     # Apply defect if requested
     #if defect:
     #    defective = ['O1', 'O2', 'A1', 'A2']

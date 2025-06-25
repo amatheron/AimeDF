@@ -526,24 +526,23 @@ def get_aperture_transmission_map(pars,params=[],debug=0):
 
 def get_aperture_thickness_map(pars,params=[],debug=0):
 
-    typ=pars['shape']
-    pxsize=params['pxsize']
-    N=params['N']
-    N2=int(N/2)
+    typ = pars['shape']
+    pxsize = params['pxsize']
+    N = params['N']
+    N2 = int(N/2)
 
     Na=(np.arange(N)-N2)*pxsize
     thicknessmap=np.zeros([N,N])+1  #that mean default is 1 m thick.
 
-    xm,ym=np.meshgrid(Na,Na)
+    xm,ym = np.meshgrid(Na,Na)
     if typ=='circle':
-#            trmap=trmap*0
-        r=((xm**2)+(ym**2))**0.5
-        rad=pars['size']/2
-        thicknessmap=thicknessmap*0
-        thicknessmap[r<rad]=pars['thickness']
+        r = ((xm**2)+(ym**2))**0.5
+        rad = pars['size']/2
+        thicknessmap = thicknessmap*0
+        thicknessmap[r<rad] = pars['thickness']
         if yamlval('invert',pars):
-            maxi=np.max(thicknessmap)
-            thicknessmap=maxi-thicknessmap
+            maxi = np.max(thicknessmap)
+            thicknessmap = maxi-thicknessmap
 
     if typ in ['parabolic_lens','streichlens']:  #realistic 2D-depth maps
         if typ in ['parabolic_lens','streichlens']:
@@ -589,19 +588,18 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
                 sel=blade>horprof
                 horprof[sel]=blade[sel]
                 thicknessmap[:,i]=horprof
-    wls=['realwire','trapez','tent','customwire','pooyan','invpoo','invpar','par','wireslit','linearslit','wire_grating']
+    wls=['realwire','trapez','tent','customwire','pooyan','invpoo','invpar','par','wireslit','linearslit','wire_grating','wireslitup','wireslitdown']
 
     if typ in wls :
-        wireprof=get_wire_like_profile(pars,params,debug)
+        wireprof = get_wire_like_profile(pars,params,debug) #get the 1D transmission profile
 
-        wireprof[np.isnan(wireprof)]=0
+        wireprof[np.isnan(wireprof)] = 0
         if yamlval('smooth',pars)!=0:
             smpx=pars['smooth']/pxsize
             wireprof=mu.convolve_gauss(wireprof,smpx,1)
             ee=int(smpx*2)
             wireprof[0:ee]=wireprof[ee+1]
             wireprof[-ee:]=wireprof[-(ee+1)]
-
 
         if yamlval('invert',pars):
             maxi=np.max(wireprof)
@@ -634,8 +632,16 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
                 phaseshift=newpp
                 thickness_to_phaseshift=newthickness_to_phaseshift
 
-        ones=Na*0+1
-        thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
+        #ones=Na*0+1
+        #thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
+
+        ones = np.ones(N)
+        orientate = pars.get('orientate_horizontal', 0)
+
+        if orientate == 1:
+            thicknessmap = np.outer(ones, wireprof)  # Horizontal structure (profile along y)
+        else:
+            thicknessmap = np.outer(wireprof, ones)  # Vertical structure (profile along x)
 
     defect_type=yamlval('defect_type',pars)
     #if defect_type=='sine':
@@ -685,19 +691,19 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
 
 
 def get_wire_like_profile(pars,params,debug):
- #realistic wire-like structures
-    r=yamlval('size',pars,0)/2
-    off=float(yamlval('offset',pars,0))
-    elem=pars['elem']
-    pxsize=params['pxsize']
-    N=params['N']
-    N2=int(N/2)
+    #Calculates a 1D profile of the transmission axis.
+    r = yamlval('size',pars,0)/2
+    off = float(yamlval('offset',pars,0))
+    elem = pars['elem']
+    pxsize = params['pxsize']
+    N = params['N']
+    N2 = int(N/2)
 
-    Na=(np.arange(N)-N2)*pxsize
-    x=Na-off
-    typ=pars['shape']
+    Na = (np.arange(N)-N2)*pxsize
+    x = Na-off
+    typ = pars['shape']
 
-#here I need to find the wireprof - i.e. 1D profile of thickness on 'x' as an x-axis
+    #here I need to find the wireprof - i.e. 1D profile of thickness on 'x' as an x-axis
     if typ.find('trapez')==0:
         thickness=pars['thickness']
         edge=pars['edge']
@@ -737,19 +743,41 @@ def get_wire_like_profile(pars,params,debug):
         circ=(r**2-(x+circ_cen)**2)**0.5
         wireprof[ss]=l1-circ[ss]
 
-    elif typ.find('wireslit')==0:
-        r=pars['r']
-        wireprof=x*0
-        halfsize=pars['size']/2
-        off=halfsize+r
-        circ1=(r**2-(Na-off)**2)**0.5*2
-        sel1=(x>=halfsize) * (x<=off)
-        wireprof[sel1]=circ1[sel1]
-        circ2=(r**2-(Na+off)**2)**0.5*2
-        sel2=(x<=halfsize) * (x>=-off)
-        wireprof[sel2]=circ2[sel2]
-        wireprof[np.abs(x)>off]=2*r
-        wireprof[np.abs(x)<halfsize]=0
+    elif typ == 'wireslit':# before : typ.find('wireslit')==0:
+        r = pars['r']
+        wireprof = x*0
+        halfsize = pars['size']/2
+        off = halfsize+r
+        circ1 = (r**2-(Na-off)**2)**0.5*2
+        sel1 = (x>=halfsize) * (x<=off)
+        wireprof[sel1] = circ1[sel1]
+        circ2 = (r**2-(Na+off)**2)**0.5*2
+        sel2 = (x<=halfsize) * (x>=-off) #wrong condition !! be carefull.
+        wireprof[sel2] = circ2[sel2]
+        wireprof[np.abs(x)>off] = 2*r
+        wireprof[np.abs(x)<halfsize] = 0
+
+    elif typ == 'wireslitup':
+        r = pars['r']
+        wireprof = x * 0
+        halfsize = pars['size'] / 2
+        off = halfsize + r
+        circ1 = (r**2-(Na-off)**2)**0.5*2
+        sel1 = (x>=halfsize) * (x<=off)
+        wireprof[sel1] = circ1[sel1]
+        wireprof[x > off] = 2 * r
+        wireprof[x < halfsize] = 0
+
+    elif typ == 'wireslitdown':
+        r = pars['r']
+        wireprof = x * 0
+        halfsize = pars['size'] / 2
+        off = halfsize + r
+        circ2 = (r**2-(Na+off)**2)**0.5*2
+        sel2 = (x<=halfsize) * (x>=-off) 
+        wireprof[sel2] = circ2[sel2]
+        wireprof[x < off] = 2 * r
+        wireprof[x > halfsize] = 0
 
     elif typ.find('invpar')==0:
         l=pars['l']
@@ -975,12 +1003,12 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             thicknessmap=thicknessmap2*thicknessmap
 
 
-    #CONVERTING THICKNESSMAPP INTO TRANSMISSION AND PHASESHIFTMAP
+    #CONVERTING THICKNESS MAP INTO TRANSMISSION AND PHASESHIFT MAP
         elem=pars['elem']
 
-        beta,delta,k,thickness_to_phaseshift=get_n(elem,E)
-        transmissionmap=np.exp(-k*thicknessmap)
-        phaseshiftmap=thicknessmap*thickness_to_phaseshift
+        beta,delta,k,thickness_to_phaseshift = get_n(elem,E)
+        transmissionmap = np.exp(-k*thicknessmap)
+        phaseshiftmap = thicknessmap * thickness_to_phaseshift
         if debug:
             print('thickness_to_phaseshift =',thickness_to_phaseshift)
             print('max thickness = ',np.max(thicknessmap))
@@ -1188,15 +1216,15 @@ def doit(params,elements):
     mu.tick()
     fig=plt.gcf()
 
-    method='FFT' #Simon: I like Forvard ('FFT') more. Regularize propagation also uses FFT method
-    method=yamlval('method',params,'FFT')
-    norms=[0,0]
-    dtype=np.complex64
-    params['pxsize']=params['propsize']/params['N']
-    N=params['N']
-    max_pixels=yamlval('subfigure_size_px',params,300)
+    method = 'FFT' #Simon: I like Forvard ('FFT') more. Regularize propagation also uses FFT method
+    method = yamlval('method',params,'FFT')
+    norms = [0,0]
+    dtype = np.complex64
+    params['pxsize'] = params['propsize'] / params['N']
+    N = params['N']
+    max_pixels = yamlval('subfigure_size_px',params,300)
     if max_pixels>N: max_pixels=N
-    auto_flow=yamlval('flow_auto_save',params)
+    auto_flow = yamlval('flow_auto_save',params)
     if 'flow' in params:
         flowdef=params['flow']
         flowposs= None
@@ -1242,7 +1270,7 @@ def doit(params,elements):
     else:
         do_edge_damping=0
 
-    figs = {}
+    figs = {} #Definition of the pickle "figs"
     export = {}
 
     pi = params['fig_start']
@@ -1316,7 +1344,8 @@ def doit(params,elements):
             lab='{:.0f}mm' .format((z)/mm)
         else:
             lab='{:.1f}mm' .format((z)/mm)
-        ZoomFactor=yamlval('zoom',el_dict,1)
+            
+        ZoomFactor = yamlval('zoom',el_dict,1)
         if ZoomFactor!=1:
             lab=lab+' ({:.0f}x)'.format(ZoomFactor)
 
@@ -1540,11 +1569,12 @@ def doit(params,elements):
         ########################### CALCULATION OF THE MAXIMUM AND INTEGRAL OF THE IMAGE #############
         #norms=[0,0] initially (1rst passage in the loop). Then, norms=[integral, sum] normalized.
         
-        im,norms,measures=prepare_image(I,ps=propsize,max_pixels=max_pixels,ZoomFactor=ZoomFactor,log=logg,norms=norms,el_dict=el_dict)
-        if el_name.startswith(tuple(figs_to_save)):
+        im,norms,measures = prepare_image(I,ps=propsize,max_pixels=max_pixels,ZoomFactor=ZoomFactor,log=logg,norms=norms,el_dict=el_dict)
 
+        ########################### ENREGISTREMENT DU PICKLE PICKLE_FIG #############
+        if el_name.startswith(tuple(figs_to_save)):
             print('Saving figure: {:}'.format(el_name))
-            figs[el_name]=[im,ei,propsize/ZoomFactor,z]
+            figs[el_name] = [im,ei,propsize/ZoomFactor,z]
 
             if np.mod(ei,20)==0:
                 print('Dumping figures')
@@ -1708,7 +1738,7 @@ def yamlval(key,ip,default=0):
         return ip[key]
 
 
-def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-200,100,5],vertical_type='center',log=1,xl=None,flow_figs=0,flow_plot_crange=1e-5):
+def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_type='center',log=1,xl=None,flow_figs=0,flow_plot_crange=1e-5):
     from pathlib import Path
     #gyax=np.arange(-50,50,1) #μm
     #vertical_type='integral'
