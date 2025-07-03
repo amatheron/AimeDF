@@ -8,8 +8,20 @@ import random
 import yaml
 import argparse
 import warnings
-import numpy as np
+
+######## Import the good backend to work on both cluster and laptop VSCODE ########
+os.environ.pop("MPLBACKEND", None)
+import matplotlib
+if os.environ.get("DISPLAY", "") == "":
+    print("No display detected: using non-interactive 'Agg' backend.")
+    matplotlib.use("Agg")  # Pour le cluster
+else:
+    print("Display detected: using 'TkAgg' backend.")
+    matplotlib.use("TkAgg")  # Pour ton ordi local
 import matplotlib.pyplot as plt
+##################################################################################
+
+import numpy as np
 from pathlib import Path
 from LightPipes import *
 
@@ -21,6 +33,7 @@ reload(df)
 
 warnings.filterwarnings("ignore")
 version = 1
+
 
 # Command-line arguments to make it SLURM-compatible
 def parse_args():
@@ -60,7 +73,7 @@ forcescatter = 0
 
 
 cluster_path = Path("/home/yu79deg/darkfield_p5438")
-local_path = Path("/Users/aime/Library/CloudStorage/Dropbox/QED_at_jena/Backup_codes/Environnement_DF_20Juin/darkfield_p5438")
+local_path = Path("/Users/aimematheron/Dropbox/AimeDF")
 
 if cluster_path.exists():
     basepath = cluster_path

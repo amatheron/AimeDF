@@ -2,22 +2,28 @@ from LightPipes import *
 import numpy as np
 import sys
 import os
+import time
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+from matplotlib.colors import LogNorm
 from astropy.io import ascii
 from PIL import Image
 from scipy import signal
 
 from pathlib import Path
 
-#import darkfield.regularized_propagation as rp
+from skimage.transform import resize
+from scipy.signal import fftconvolve
+from scipy.ndimage import gaussian_filter1d
+
 import darkfield.rossendorfer_farbenliste as rofl
 import darkfield.mmmUtils_v2 as mu
-#Simon start----
 import darkfield.regularized_propagation_v2 as rp
-#Simon end----
-HOME = '/home/yu79deg/darkfield_p5438/'
+
+
+
+
 
 def elem2Z(elem):
     if elem=='Be':   return 4
@@ -1189,6 +1195,184 @@ def sort_elements(ele,debug=0):
     return El2
 
 
+
+
+
+def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles, Initial_energy_Geant4, N, propsize, nbins=401, smooth_sigma=4.0, plot_debug=False):
+    
+    """
+    Build a smooth, rotationally symmetric scattering kernel from Geant4 particle hits.
+
+    Parameters:
+    - x_particles, y_particles: arrays of particle hit positions [µm]
+    - N: output resolution (LightPipes grid)
+    - propsize: LightPipes physical window size [m]
+    - nbins: number of radial bins
+    - smooth_sigma: Gaussian filter sigma (in bins)
+    - log_bins: if True, use logarithmic binning to better resolve the center
+    - plot_debug: plot radial profile and final kernel if True
+
+    Returns:
+    - kernel_2D: (N x N) normalized scattering kernel
+    """
+    
+    # Compute the radius of each particle
+    r_particles = np.sqrt(x_particles**2 + y_particles**2)   # in [um]
+    
+    # Convert propsize [m] to micrometers
+    half_size_um = propsize * 1e6 / 2
+    r_max = 2**0.5 * half_size_um
+
+    # Filter particles within the simulation window
+    valid = r_particles <= r_max
+    r_particles = r_particles[valid]
+    e_particles = e_particles[valid]
+    
+    # Step 2: define bins
+    r_bins = np.linspace(0, r_max, nbins + 1)
+
+    Energy_weights_radial = e_particles / Initial_energy_Geant4  # only keep weights for selected particles
+    radial_hist, _ = np.histogram(r_particles, bins = r_bins, weights = Energy_weights_radial)
+
+    bin_areas = np.pi * (r_bins[1:]**2 - r_bins[:-1]**2)
+    radial_density = radial_hist / bin_areas  # [particles / µm²]
+    
+    # Smoothing part
+    if smooth_sigma is None or smooth_sigma == 0:
+        radial_density_smooth = radial_density.copy()
+    else:
+        n_unsmoothed = 1 # Number of points to exclude from smoothing
+        tail_smoothed = gaussian_filter1d(radial_density[n_unsmoothed:], sigma=smooth_sigma) # Create a smoothed version of the tail of the profile
+        radial_density_smooth = np.concatenate([ radial_density[:n_unsmoothed], tail_smoothed]) # Concatenate unsmoothed + smoothed parts
+
+
+    pixel_size_um = 2 * half_size_um / N
+    linspace_um = pixel_size_um * (np.arange(N) - N // 2)
+
+    X, Y = np.meshgrid(linspace_um, linspace_um)
+    R_grid = np.sqrt(X**2 + Y**2)
+    kernel_2D = np.interp(R_grid, r_bins[:-1], radial_density_smooth, left=0, right=0)
+
+    return kernel_2D, radial_hist, r_bins, radial_density , radial_density_smooth
+
+def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = False, use_symmetric_kernel = False, compute_transmission = False):
+
+    """
+    Applies Geant4 air scattering to the LightPipes field via convolution.
+    
+    Parameters:
+    - F: LightPipes field object
+    - params: dict containing at least 'projectdir'
+    - propsize: field size in meters (LightPipes simulation window)
+    - N: number of pixels in LightPipes grid
+    - plot_debug: if True, show and save a comparison figure
+    - use_symmetric_kernel: if True, build rotationally symmetric smoothed kernel
+    
+    Returns:
+    - I_after_air: convolved intensity (2D numpy array)
+    """
+    import time
+    start_time = time.time() #starts the timer
+    
+    basepath = Path(params["projectdir"]).parent
+    data = np.load(basepath / "Air_scattering/xray_Primaries2e9_50umKapton_Air_stats.npz")
+    x_particles = data["x"] # in um
+    y_particles = data["y"] # in um
+    e_particles = data["e"] # in keV
+    Initial_energy_Geant4 = 8.8 # in keV
+    
+    half_size_um = propsize * 1e6 / 2
+
+    if use_symmetric_kernel:
+        kernel_2D, radial_hist, r_bins, radial_density , radial_density_smooth = build_symmetric_kernel_from_particles(
+            x_particles, y_particles, e_particles, Initial_energy_Geant4,  N = N, propsize = propsize,
+            nbins=1001, smooth_sigma=4.0, plot_debug=False)
+    else:
+        kernel_2D, _, _ = np.histogram2d(x_particles, y_particles, bins=N, range=[[-half_size_um, half_size_um], [-half_size_um, half_size_um]], 
+                                         weights = e_particles / Initial_energy_Geant4 )
+        radial_hist = radial_density = radial_density_smooth = None
+
+    kernel_2D /= np.sum(kernel_2D) #normalizing such that the sum is 1
+    
+    nb_particles_after_scattering = len(x_particles) # total number of particles ending on the screen after scattering
+    nb_primaries = 2e9 #number of primary particles (nb of particles intialised in the simulation)
+
+    transmission_factor = nb_particles_after_scattering / nb_primaries #percentage of particles making it through
+    
+    if compute_transmission:
+        kernel_2D *= transmission_factor  # Take into account that some particles are absorbed by air
+    
+    
+    I_lp = Intensity(0, F)
+    #I_after_air = fftconvolve(I_lp, kernel_2D, mode='same')
+
+    ######## TO REMOVE ######### (sanity check)
+    shape = I_lp.shape
+    centered_map = np.zeros_like(I_lp)
+    center_y = shape[0] // 2
+    center_x = shape[1] // 2
+    centered_map[center_y, center_x] = 1.0
+    #########################################
+    
+    I_after_air = fftconvolve(I_lp, centered_map, mode='same')
+
+    if plot_debug:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+        axes[0, 0].scatter(x_particles, y_particles, s=1, alpha=0.3)
+        axes[0, 0].set_xlim(-half_size_um, half_size_um)
+        axes[0, 0].set_ylim(-half_size_um, half_size_um)
+        axes[0, 0].set_title("Geant4 raw scatter (scatter plot)")
+        axes[0, 0].set_xlabel("x [µm]")
+        axes[0, 0].set_ylabel("y [µm]")
+        axes[0, 0].grid(True)
+        axes[0, 0].set_aspect("equal")
+
+        if use_symmetric_kernel and r_bins is not None:
+            axes[0, 1].plot(r_bins[:-1], radial_density)
+            axes[0, 1].set_title("Radial histogram (nb particles at a given r / area)")
+            axes[0, 1].set_xlabel("r [µm]")
+            axes[0, 1].set_ylabel("Photons/area")
+            axes[0, 1].set_yscale('log')
+            axes[0, 1].grid(True)
+
+            axes[0, 2].plot(r_bins[:-1], radial_density_smooth)
+            axes[0, 2].set_title("Radial density smoothed (nb particles / area at a given r)")
+            axes[0, 2].set_xlabel("r [µm]")
+            axes[0, 2].set_ylabel("Photons/area")
+            axes[0, 2].set_yscale('log')
+            axes[0, 2].grid(True)
+
+        extent_um = [-half_size_um, half_size_um, -half_size_um, half_size_um]  # [µm]
+        
+        im3 = axes[1, 0].imshow(kernel_2D, cmap='inferno', norm=LogNorm(), extent=extent_um, origin='lower')
+        axes[1, 0].set_title("2D Geant4 kernel")
+        fig.colorbar(im3, ax=axes[1, 0])
+        
+        im4 = axes[1, 1].imshow(I_lp, cmap='inferno', norm=LogNorm(), extent=extent_um, origin='lower')
+        axes[1, 1].set_title("LightPipes Intensity")
+        fig.colorbar(im4, ax=axes[1, 1])
+        
+        im5 = axes[1, 2].imshow(I_after_air, cmap='inferno', norm=LogNorm(), extent=extent_um, origin='lower')
+        axes[1, 2].set_title("After convolution")
+        fig.colorbar(im5, ax=axes[1, 2])
+        
+        for ax in axes[1, :]:
+            ax.set_xlabel("x [µm]")
+            ax.set_ylabel("y [µm]")
+
+        plt.tight_layout()
+        plt.savefig(basepath / "AirScattering_DebugPanel_6plots.png", dpi=300)
+        plt.show()
+
+    elapsed_time = time.time() - start_time  # End timer
+    print(f"Air scattering + convolution took {elapsed_time:.2f} seconds.")
+    
+    return I_after_air
+
+
+
+
 #############################################################################
 
 #############################################################################
@@ -1307,7 +1491,7 @@ def doit(params,elements):
         if not yamlval('in',el_dict,1):
             if yamlval('plot',el_dict,1):
                 pi+=1
-            print('  skipping because out')
+            print('skipping because out')
             continue
 
         
@@ -1536,11 +1720,25 @@ def doit(params,elements):
                     if yamlval('do_phaseshift',el_dict,1):
                         F = MultPhase(phasemap,F)
 
-
-
+        ############## Air Scattering ##########
+        
+        if el_name == 'Det' and el_dict.get('AirScat', 0):
+            
+            compute_transmission = el_dict.get('compute_transmission', 0)
+            use_symmetric_kernel = el_dict.get('use_symmetric_kernel', True)
+            
+            I_after_air = apply_air_scattering_and_debug_plot(F,
+                                                              params, 
+                                                              propsize, 
+                                                              N, 
+                                                              plot_debug = True, 
+                                                              use_symmetric_kernel = use_symmetric_kernel,
+                                                              compute_transmission = compute_transmission)
+           
         ############# EDGE DAMPING ###########
+        
         if do_edge_damping:
-            F=MultIntensity(edge_damping_aperture,F)
+            F = MultIntensity(edge_damping_aperture,F)
         
         ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
 
@@ -1554,10 +1752,14 @@ def doit(params,elements):
             print("plotting phase instead of intensity")
             if 0:
                 mu.figure()
-                plt.imshow(ph)
+                plt.imshow(I)
                 plt.colorbar()
+        elif 'I_after_air' in locals(): # If we activated the propagation through air
+            print("Using intensity after air scattering")
+            I = I_after_air
         else:
-            I = Intensity(0,F)
+            I = Intensity(0, F)
+
             
         ####################################################################################
         

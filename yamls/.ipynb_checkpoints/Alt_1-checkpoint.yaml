@@ -76,7 +76,7 @@ A1:
   in: 1
   elem: W
   r: 0.0002
-  shape: wireslitdown
+  shape: wireslitup
   size: 0.0
   position: 1.8
   type: aperture
