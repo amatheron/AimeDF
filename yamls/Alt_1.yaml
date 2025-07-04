@@ -16,7 +16,7 @@ O1:
   elem: W
   shape: wireslitup
   r: 0.0002
-  size: 0.0 #diameter
+  size: -50.0e-6 #diameter
   type: aperture
   #defect_type: sine
   #defect_lambda: 1.9999999999999998e-05

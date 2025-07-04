@@ -1229,12 +1229,12 @@ def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles,
     e_particles = e_particles[valid]
     
     # Step 2: define bins
-    r_bins = np.linspace(0, r_max, nbins + 1)
+    r_bins = np.linspace(0, r_max, nbins + 1) # in [um]
 
     Energy_weights_radial = e_particles / Initial_energy_Geant4  # only keep weights for selected particles
     radial_hist, _ = np.histogram(r_particles, bins = r_bins, weights = Energy_weights_radial)
 
-    bin_areas = np.pi * (r_bins[1:]**2 - r_bins[:-1]**2)
+    bin_areas = np.pi * (r_bins[1:]**2 - r_bins[:-1]**2) #in [um^2]
     radial_density = radial_hist / bin_areas  # [particles / µm²]
     
     # Smoothing part
