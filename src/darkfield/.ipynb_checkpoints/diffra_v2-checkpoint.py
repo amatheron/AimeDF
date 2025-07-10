@@ -479,56 +479,62 @@ def do_edge_damping_aperture(params):
     return trans
 
 
-# %%
-def get_aperture_transmission_map(pars,params=[],debug=0):
-    typ=pars['shape']
-    pxsize=params['pxsize']
-    N=params['N']
-    N2=int(N/2)
 
-    Na=(np.arange(N)-N2)*pxsize
-    trmap=np.zeros([N,N])+1  #that mean default is 1 = transmissive
 
-    xm,ym=np.meshgrid(Na,Na)
+def get_aperture_transmission_map(pars, params={}, debug=0):
+    typ = pars['shape']
+    pxsize = params['pxsize']  # pixel size in meters
+    N = params['N']
+    N2 = int(N / 2)
 
-#the flat ideal things
-    if typ in ['square','rectangle','wire','circle','gaussian']:
-        if typ=='square':
-            hs=pars['size']/2
-            sel=(xm>=-hs)*(xm<=hs)*(ym>=-hs)*(ym<=hs)
-            trmap[sel]=0
-        if typ=='rectangle':
-            hs=pars['size']/2
-            vs=pars['sizevert']/2
-            sel=(xm>=-hs)*(xm<=hs)*(ym>=-vs)*(ym<=vs)
-            trmap[sel]=0
-        if typ=='wire':
-            hs=pars['size']/2
-            sel=(xm>=-hs)*(xm<=hs)
-            trmap[sel]=0
-    #    if typ=='circle':
-#            trmap=trmap*0
-     #       r=((xm**2)+(ym**2))**0.5
-      #      rad=pars['size']/2
-       #     trmap[r<rad]=0
+    # 2D coordinate grid centered at 0
+    Na = (np.arange(N) - N2) * pxsize
+    xm, ym = np.meshgrid(Na, Na)
 
-        if typ=='gaussian':
-            r=((xm**2)+(ym**2))**0.5
+    # Default map is fully transmissive
+    trmap = np.ones((N, N))
 
-            rax=np.arange(0,2*N2)*pxsize# to be in m
-            power=float(pars['power'])
-            fwhm=float(pars['size'])
-            gauss=mu.gauss(rax,0,1,0,fwhm,power=power)
-         #   gauss=1-gauss
-            for xi,x in enumerate(xm):
-                for yi,y in enumerate(ym):
-                    val=np.interp(r[xi,yi],rax,gauss)
-                    trmap[xi,yi]=val
+    if typ == 'square':
+        hs = pars['size'] / 2  # half side length
+        sel = (np.abs(xm) <= hs) & (np.abs(ym) <= hs)
+        trmap[sel] = 0
 
-        if yamlval('invert',pars):
-            trmap=1-trmap
+    elif typ == 'rectangle':
+        hs = pars['size'] / 2
+        vs = pars['sizevert'] / 2
+        sel = (np.abs(xm) <= hs) & (np.abs(ym) <= vs)
+        trmap[sel] = 0
+
+    elif typ == 'wire':
+        hs = pars['size'] / 2
+        sel = (np.abs(xm) <= hs)
+        trmap[sel] = 0
+
+    elif typ == 'circle':
+        r = np.sqrt(xm**2 + ym**2)
+        rad = pars['size'] / 2
+        trmap[r < rad] = 0
+
+    elif typ == 'gaussian':
+        r2 = xm**2 + ym**2
+        fwhm = float(pars['size'])      # 'size' is FWHM
+        P = float(pars.get('power', 2)) # order of super-Gaussian
+    
+        sigma = fwhm / (2 * np.sqrt(2) * (np.log(2))**(1 / (2 * P))) #wikipedia definition of Super Gaussian profile
+    
+        trmap = np.exp( - ( (r2 / (2 * sigma**2)) ** P ) )
+        
+
+    else:
+        raise ValueError(f"Unknown aperture shape: {typ}")
+
+    # Invert transmission if needed
+    if yamlval('invert', pars):
+        trmap = 1 - trmap
+
     return trmap
-# %%
+
+
 
 def get_aperture_thickness_map(pars,params=[],debug=0):
 
@@ -1195,8 +1201,42 @@ def sort_elements(ele,debug=0):
     return El2
 
 
+def croping_to_odd(image):
+    """
+    Crops the image in the case where N is even such that the corresponding image has an odd number of points. This is better for air scattering convolutions
+    """
+    rows, cols = image.shape
+    if rows % 2 == 0:
+        image = image[:-1, :]
+    if cols % 2 == 0:
+        image = image[:, :-1]
+    return image
 
 
+def restore_even_shape_by_duplication(image, target_shape):
+    """
+    Add one row and/or column to the image by duplicating the last row/column,
+    to restore original shape after cropping.
+    """
+    current_rows, current_cols = image.shape
+    target_rows, target_cols = target_shape
+    assert target_rows >= current_rows and target_cols >= current_cols
+
+    # Start with the cropped image
+    restored = image.copy()
+
+    # If we need to add a row
+    if target_rows > current_rows:
+        last_row = restored[-1:, :]
+        restored = np.vstack([restored, last_row])
+
+    # If we need to add a column
+    if target_cols > current_cols:
+        last_col = restored[:, -1:]
+        restored = np.hstack([restored, last_col])
+
+    return restored
+    
 
 def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles, Initial_energy_Geant4, N, propsize, nbins=401, smooth_sigma=4.0, plot_debug=False):
     
@@ -1229,12 +1269,12 @@ def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles,
     e_particles = e_particles[valid]
     
     # Step 2: define bins
-    r_bins = np.linspace(0, r_max, nbins + 1)
+    r_bins = np.linspace(0, r_max, nbins + 1) # in [um]
 
     Energy_weights_radial = e_particles / Initial_energy_Geant4  # only keep weights for selected particles
     radial_hist, _ = np.histogram(r_particles, bins = r_bins, weights = Energy_weights_radial)
 
-    bin_areas = np.pi * (r_bins[1:]**2 - r_bins[:-1]**2)
+    bin_areas = np.pi * (r_bins[1:]**2 - r_bins[:-1]**2) #in [um^2]
     radial_density = radial_hist / bin_areas  # [particles / µm²]
     
     # Smoothing part
@@ -1255,7 +1295,7 @@ def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles,
 
     return kernel_2D, radial_hist, r_bins, radial_density , radial_density_smooth
 
-def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = False, use_symmetric_kernel = False, compute_transmission = False):
+def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = False, use_symmetric_kernel = False, compute_transmission = False, test_identity_kernel = False , crop_to_odd = True):
 
     """
     Applies Geant4 air scattering to the LightPipes field via convolution.
@@ -1292,6 +1332,22 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
                                          weights = e_particles / Initial_energy_Geant4 )
         radial_hist = radial_density = radial_density_smooth = None
 
+    ################ SANITY CHECK WITH AN IDENTITY KERNEL ##############
+
+    I_lp = F
+
+    # Step 1: Force identity kernel first if requested
+    if test_identity_kernel:
+        kernel_2D = np.zeros((N, N))
+        kernel_2D[N // 2, N // 2] = 1.0
+    
+    # Step 2: Crop both kernel and image together, if needed
+    if crop_to_odd:
+        kernel_2D = croping_to_odd(kernel_2D)
+        I_lp = croping_to_odd(I_lp)
+
+    
+    
     kernel_2D /= np.sum(kernel_2D) #normalizing such that the sum is 1
     
     nb_particles_after_scattering = len(x_particles) # total number of particles ending on the screen after scattering
@@ -1302,19 +1358,23 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     if compute_transmission:
         kernel_2D *= transmission_factor  # Take into account that some particles are absorbed by air
     
+    #I_lp = Intensity(0, F)
     
-    I_lp = Intensity(0, F)
-    #I_after_air = fftconvolve(I_lp, kernel_2D, mode='same')
 
-    ######## TO REMOVE ######### (sanity check)
-    shape = I_lp.shape
-    centered_map = np.zeros_like(I_lp)
-    center_y = shape[0] // 2
-    center_x = shape[1] // 2
-    centered_map[center_y, center_x] = 1.0
-    #########################################
     
-    I_after_air = fftconvolve(I_lp, centered_map, mode='same')
+    
+
+    I_after_air = fftconvolve(I_lp, kernel_2D, mode='same') #convolve the image with the Kernel
+
+    I_after_air = restore_even_shape_by_duplication(I_after_air, (N, N)) # add back a line and a row to make it (NxN) again.
+    #I_lp = restore_even_shape_by_duplication(I_lp, (N, N)) # add back a line and a row to make it (NxN) again.
+
+    # Set the values outside the disk to 0 after the convolution
+    Ymask, Xmask = np.indices(I_after_air.shape)
+    rmask = np.sqrt((Xmask - N//2)**2 + (Ymask - N//2)**2)
+    mask = rmask <= (N//2)  # or a more precise radius
+    I_after_air[~mask] = 0
+
 
     if plot_debug:
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -1366,7 +1426,7 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
         plt.show()
 
     elapsed_time = time.time() - start_time  # End timer
-    print(f"Air scattering + convolution took {elapsed_time:.2f} seconds.")
+    print(f"Air scattering + convolution took {elapsed_time/60:.2f} minutes.")
     
     return I_after_air
 
@@ -1726,20 +1786,26 @@ def doit(params,elements):
             
             compute_transmission = el_dict.get('compute_transmission', 0)
             use_symmetric_kernel = el_dict.get('use_symmetric_kernel', True)
+            test_identity_kernel = el_dict.get('test_identity_kernel', 0)
+            crop_to_odd = el_dict.get('crop_to_odd', 1)  # crops the image if N is even such that the image has an odd number of pixels (better for convolution)
             
             I_after_air = apply_air_scattering_and_debug_plot(F,
                                                               params, 
                                                               propsize, 
                                                               N, 
                                                               plot_debug = True, 
-                                                              use_symmetric_kernel = use_symmetric_kernel,
-                                                              compute_transmission = compute_transmission)
+                                                              use_symmetric_kernel = use_symmetric_kernel, compute_transmission = compute_transmission,
+                                                              test_identity_kernel = test_identity_kernel , crop_to_odd = crop_to_odd)
            
         ############# EDGE DAMPING ###########
         
         if do_edge_damping:
             F = MultIntensity(edge_damping_aperture,F)
-        
+
+        ################## OUTPUT FIELD AT TCC #################
+        if el_name == 'TCC' and el_dict.get('output_field', 0):
+            np.savez('XrayFieldmap_TCC.npz', F = F) #saving the complex field at TCC for later estimation of VB
+            
         ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
 
         do_plot = yamlval('plot',el_dict,def_do_plot)
@@ -1781,7 +1847,6 @@ def doit(params,elements):
             if np.mod(ei,20)==0:
                 print('Dumping figures')
                 if np.size(figs)>0:
-                    #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
                     pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
                     mu.dumpPickle(figs, str(pkl_name))
 
@@ -1904,22 +1969,16 @@ def doit(params,elements):
     duration=mu.print_times()
     params['duration']=duration
 
-#    plt.legend()
     if np.size(figs)>0:
-        #mu.dumpPickle(figs,params['projectdir']+'pickles/'+params['filename']+'_figs')
-        #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
         pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
         mu.dumpPickle(figs, str(pkl_name))
     if len(export)>0:
-        #mu.dumpPickle(export,params['projectdir']+'pickles/'+params['filename']+'_export')
-        #pkl_name = f"{HOME}/Aime/pickles/{params['filename']}_figs" #ancienne version avant de modifier pour version compatible cluster et laptop
         pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
         mu.dumpPickle(figs, str(pkl_name))
 
     return params,trans,figs
 
-# those functions copied from
-#/home/michal/hzdr/XFEL2806_spectroscopy/focus_tracing/focusing2.py
+# those functions copied from /home/michal/hzdr/XFEL2806_spectroscopy/focus_tracing/focusing2.py
 
 def CRL4_get_length(number_of_lenses,Energy):
     f=CRL_get_length(0.05,number_of_lenses,Energy)
@@ -1951,14 +2010,9 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
     gyax=np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
     fn=str(file)+'_figs'
     fns=fn
-    #pic = mu.loadPickle('./'+project_dir+'/pickles/'+fn+'.pickle',strict=1) #loading the images
 
     pic_path = Path(project_dir) / 'pickles' / f'{fn}.pickle'
     pic = mu.loadPickle(str(pic_path), strict=1)
-    
-    #p2 = fn.replace('figs','res')
-    #p2 = p2.replace('export','res')
-    #res = mu.loadPickle('./'+project_dir+'/pickles/'+p2+'.pickle') #loading the general parameters
 
     p2 = fn.replace('figs', 'res').replace('export', 'res')
     res_path = Path(project_dir) / 'pickles' / f'{p2}.pickle'
@@ -1982,7 +2036,6 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
             scatterer_L2_loss=yamlval('transmission_of_scatterer_L2',params,1)
         N=res[1]['subfigure_size_px']
     else: params=[]
-#    else:
     assert len(pic.keys())>0, 'There are no pictures in the pickle!'
 
     akey=sorted(pic.keys())[0]
@@ -2105,13 +2158,13 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
         for va in zax[pos]:
             vals.append('{:.1f}'.format(va))
         plt.xticks(pos,vals)
-#        ax.xaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.3f}"))
+        #ax.xaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.3f}"))
         #plt.yticks(np.arange(-gyax_def[1],-gyax_def[0],50))
         plt.yticks(np.arange(0,np.size(gyax)+1,50))
     else:
         mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=log,ticks=0,cl=cl)
     profile=mu.normalize(propsizes)*np.max(gyax)
-#%% %decorations
+    #%% %decorations
     maxy=np.min(gyax)
     if not partial:
 

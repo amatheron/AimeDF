@@ -25,7 +25,7 @@ import numpy as np
 from pathlib import Path
 from LightPipes import *
 
-import mmmUtils as mu
+import mmmUtils_v2 as mu
 import rossendorfer_farbenliste as rofl
 import diffra_v2 as df
 from importlib import reload
