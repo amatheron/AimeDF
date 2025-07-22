@@ -250,6 +250,41 @@ def get_n(elem,E):
   #      phaseshift=deltas/lambd* 2*3.14
     return beta,delta,k,thickness_to_phaseshift
 
+_index_cache = {}
+
+def get_index(elem, E, table_dir=None):
+    """
+    Return delta and beta by interpolating the Henke data for given element and energy.
+    If table_dir is not specified, it is assumed to be next to diffra_v2.py
+    """
+    global _index_cache
+
+    # Locate optical_constants folder relative to the file location of diffra_v2.py
+    if table_dir is None:
+        table_dir = Path(__file__).parent / "optical_constants"
+
+    filepath = table_dir / f"{elem}.txt"
+
+    if not filepath.exists():
+        raise FileNotFoundError(
+            f"{filepath} not found. Set table_dir explicitly if needed."
+        )
+
+    if elem not in _index_cache:
+        data = np.genfromtxt(filepath, comments='#', skip_header=1)
+        if data.shape[1] < 3:
+            raise ValueError(f"Expected ≥3 columns (E, delta, beta) in {filepath}")
+        energies = data[:, 0]
+        delta = data[:, 1]
+        beta = data[:, 2]
+        _index_cache[elem] = (energies, delta, beta)
+
+    energies, delta_vals, beta_vals = _index_cache[elem]
+    delta = np.interp(E, energies, delta_vals)
+    beta  = np.interp(E, energies, beta_vals)
+    return delta, beta
+
+
 def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
     #r=0.5
     x=xax
@@ -1323,6 +1358,14 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     
     half_size_um = propsize * 1e6 / 2
 
+    # Step 1: Force identity kernel first if requested
+    if test_identity_kernel:
+        kernel_2D = np.zeros((N, N))
+        kernel_2D[N // 2, N // 2] = 1.0
+        use_symmetric_kernel = 0  # Prevent rebuilding later
+        compute_transmission = 0  # Prevent scaling
+
+        
     if use_symmetric_kernel:
         kernel_2D, radial_hist, r_bins, radial_density , radial_density_smooth = build_symmetric_kernel_from_particles(
             x_particles, y_particles, e_particles, Initial_energy_Geant4,  N = N, propsize = propsize,
@@ -1336,10 +1379,6 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
 
     I_lp = F
 
-    # Step 1: Force identity kernel first if requested
-    if test_identity_kernel:
-        kernel_2D = np.zeros((N, N))
-        kernel_2D[N // 2, N // 2] = 1.0
     
     # Step 2: Crop both kernel and image together, if needed
     if crop_to_odd:
@@ -1347,16 +1386,18 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
         I_lp = croping_to_odd(I_lp)
 
     
-    
-    kernel_2D /= np.sum(kernel_2D) #normalizing such that the sum is 1
-    
-    nb_particles_after_scattering = len(x_particles) # total number of particles ending on the screen after scattering
-    nb_primaries = 2e9 #number of primary particles (nb of particles intialised in the simulation)
 
-    transmission_factor = nb_particles_after_scattering / nb_primaries #percentage of particles making it through
+
+    if not test_identity_kernel
+        kernel_2D /= np.sum(kernel_2D) #normalizing such that the sum is 1
     
-    if compute_transmission:
-        kernel_2D *= transmission_factor  # Take into account that some particles are absorbed by air
+        nb_particles_after_scattering = len(x_particles) # total number of particles ending on the screen after scattering
+        nb_primaries = 2e9 #number of primary particles (nb of particles intialised in the simulation)
+
+        transmission_factor = nb_particles_after_scattering / nb_primaries #percentage of particles making it through
+    
+        if compute_transmission:
+            kernel_2D *= transmission_factor  # Take into account that some particles are absorbed by air
     
     #I_lp = Intensity(0, F)
     
@@ -1750,6 +1791,38 @@ def doit(params,elements):
                 loss_on_scatterer = Ii2/Ii1
                 params['transmission_of_scatterer_'+el_name] = loss_on_scatterer
 
+        ############# CUSTOM CRL ELEMENT ###############
+        if el_type == 'Custom_CRL':
+            ROC = yamlval('ROC',el_dict,None) # Radius of curvature of the lens
+            L = yamlval('L',el_dict,None) # total lens thickness
+            A = yamlval('A',el_dict,None) # Geometrical Aperture of the lens
+            t_wall = yamlval('twall',el_dict,None) # Distance between the apices of the parabolic surface
+
+            if A is None and t_wall is not None:
+                A = 2 * np.sqrt(ROC * (L - t_wall))
+            elif t_wall is None and A is not None:
+                t_wall = L - A**2 / (4 * ROC)
+            else:
+                assert A is not None and t_wall is not None, "Need either A or twall for Custom_CRL, not both !"
+
+            E = params['photon_energy']
+            lens_elem = yamlval('lens_elem',el_dict,'Be')  # Lens element, default is Be
+            delta, beta = get_index('Be', E) # Reads the index at a given energy from Henkel tables.
+
+            Na = (np.arange(N) - N2) * params['pxsize']
+            xm, ym = np.meshgrid(Na, Na)
+            r = np.sqrt(xm**2 + ym**2)
+
+            thickness = np.ones_like(r) * L
+            mask = r < A
+            thickness[mask] = (xm[mask]**2 + ym[mask]**2) / ROC + t_wall
+
+            transmission_map = np.exp(-k * thickness)
+            phase_map = thickness 
+
+            F = MultIntensity(transmission_map, F)
+            F = MultPhase(phase_map, F)
+            
         ############# ELEMENT : PHASE PLATE ###########
         if el_type=='phaseplate':
             phaseshiftmap=do_phaseplate(el_dict,params)
