@@ -1,0 +1,79 @@
+start:
+  position: -2
+  type: image
+  
+beam_shaper:
+  position: -1
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 4
+  size: 0.00065
+  
+CustomCRL:
+  in: 1
+  position: 0
+  type: Custom_CRL
+  ROC: 50.0e-6   # Radius of curvature in [m]
+  L: 1.6e-3      # Total mechanical lens thickness [m]
+  A: 400.0e-6    # Geometric aperture radius [m]
+  nb_lenses: 5. # Number of lenses
+  lens_material: Be
+  add_aperture: 1
+  #f: 10.978
+  #size: 0.002
+
+  
+
+Det:
+  position: 5.0
+  type: imager
+  roi: 13
+  roi2: 75
+  
+beam:
+  offset: 0
+  size: 0.00225
+  photonenergy: 8766
+  
+simulation:
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - CustomCRL
+  - Det
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -2.0
+  - 5.0
+  - 0.05
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -225.0
+  - 225.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50

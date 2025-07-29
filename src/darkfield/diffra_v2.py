@@ -16,6 +16,8 @@ from pathlib import Path
 from skimage.transform import resize
 from scipy.signal import fftconvolve
 from scipy.ndimage import gaussian_filter1d
+from scipy.constants import e, epsilon_0, hbar, c
+from scipy.special import j1
 
 import darkfield.rossendorfer_farbenliste as rofl
 import darkfield.mmmUtils_v2 as mu
@@ -1388,7 +1390,7 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     
 
 
-    if not test_identity_kernel
+    if not test_identity_kernel:
         kernel_2D /= np.sum(kernel_2D) #normalizing such that the sum is 1
     
         nb_particles_after_scattering = len(x_particles) # total number of particles ending on the screen after scattering
@@ -1474,6 +1476,80 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
 
 
 
+
+
+def airy_disk_map(L, N, lam=800e-9, f=0.10, D=0.10, P_peak=200, return_grid=False):
+    """
+    Build a 2-D Airy-disk intensity map on a square grid of side-length L.
+
+    The pixel count (N x N) and the physical window size (L x L) are
+    supplied directly, so the pattern is binned identically to any other
+    field defined on the same grid.
+
+    Parameters
+    ----------
+    L : float
+        Physical width of the square window [m].
+    N : int
+        Number of samples along each axis (array is NxN).
+    lam : float, default 800e-9
+        Wavelength [m].
+    f : float,  default 0.10
+        Focal length [m].
+    D : float,  default 0.10
+        Aperture diameter [m].
+    return_grid : bool, default False
+        If True, also return the centred 1-D coordinate vector `x` [m].
+    P_peak : float
+        Power of the IR Relax laser. Nominal is 200 TW. Maximum is 300 TW.
+
+    Returns
+    -------
+    airy : ndarray  (N x N)
+        Airy disk intensity map (normalised so peak = 1).
+    x : ndarray, optional
+        Coordinate vector (metres), length N, centred on 0.
+    """
+    dx = L / N
+    x  = (np.arange(N) - N/2) * dx
+    X, Y = np.meshgrid(x, x, indexing='ij')
+    r   = np.hypot(X, Y)
+
+    kr  = (np.pi * D * r) / (lam * f)
+    A   = np.ones_like(r)
+    mask = r != 0                     # avoid 0/0 at the origin
+    A[mask] = 2.0 * j1(kr[mask]) / kr[mask]
+    airy = A**2                       # intensity
+    print(L,N)
+    # ---------------------------------------------------------------------
+    #  Compute peak intensity based on laser power
+    # ---------------------------------------------------------------------
+    I_W_cm2  = P_peak * airy / 1e4          # Intensity map of the laser in W/cm²
+    I_max_W_cm2 = np.max(I_W_cm2) # Peak intensity of the RelaX laser in W/cm^2
+    a0 = 0.68 * (1e-18 *I_max_W_cm2 )**0.5 # Maximum a0 of the laser
+
+    ############# DEBUG Plot ############
+    if 1:
+        plt.figure()
+        plt.imshow(I_W_cm2, extent=[x[0]*1e6, x[-1]*1e6, x[0]*1e6, x[-1]*1e6])
+        plt.xlabel("x [μm]")
+        plt.ylabel("y [μm]")
+        plt.title("I [W/cm²]")
+        plt.colorbar(label="Intensity [W/cm²]")
+        plt.savefig("/home/yu79deg/darkfield_p5438/IR_intensity.png", dpi=300)
+        plt.show()
+
+        print(f"Check: ∫ airy dx dy = {airy.sum() * dx * dx:.5f} (should be ~1)")
+        print(f"Peak intensity :  {I_max_W_cm2:.3e} W/cm²")
+        print(f"a0 peak : {a0} ")
+    
+    if return_grid:
+        return I_W_cm2, x
+    return I_W_cm2
+
+
+
+
 #############################################################################
 
 #############################################################################
@@ -1495,6 +1571,7 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
 def doit(params,elements):
 
     projectdir = Path(params.get("projectdir", "."))
+    basepath = Path(params["projectdir"]).parent
     
     #method=params['method']
     mu.clear_times()
@@ -1597,7 +1674,7 @@ def doit(params,elements):
 
         
         
-    ####### Propagation from the current field position to the element position #######
+         ####### Propagation from the current field position to the element position #######
         delta_z = z-F_pos
         
         if delta_z==0:
@@ -1634,7 +1711,7 @@ def doit(params,elements):
         if ZoomFactor!=1:
             lab=lab+' ({:.0f}x)'.format(ZoomFactor)
 
-     ################## Apply the element to the beam ##############
+         ################## Apply the element to the beam ##############
         
         def_do_plot = 1
         
@@ -1682,7 +1759,7 @@ def doit(params,elements):
                     print(f"..but still regularizing by CRL in {F_pos} by value {f}")
 
 
-      ############# LENS ELEMENT ###############
+         ############# LENS ELEMENT ###############
         if 'lens' in el_type:
             ideal = yamlval('ideal', el_dict, 1)
             if ideal:
@@ -1793,35 +1870,178 @@ def doit(params,elements):
 
         ############# CUSTOM CRL ELEMENT ###############
         if el_type == 'Custom_CRL':
-            ROC = yamlval('ROC',el_dict,None) # Radius of curvature of the lens
-            L = yamlval('L',el_dict,None) # total lens thickness
-            A = yamlval('A',el_dict,None) # Geometrical Aperture of the lens
-            t_wall = yamlval('twall',el_dict,None) # Distance between the apices of the parabolic surface
+
+            # ────────────────────────────────────────────────
+            # 1. Read geometry from YAML ---------------------
+            # ────────────────────────────────────────────────
+            ROC       = yamlval('ROC',   el_dict, None)                           # Radius of curvature of the parabolic surface          [m]
+            L         = yamlval('L',     el_dict, None)                           # Total mechanical lens thickness                       [m]
+            A         = yamlval('A',     el_dict, None)                           # Geometric aperture radius                             [m]
+            t_wall    = yamlval('twall', el_dict, None)                           # Minimal lens thickness (apex-to-apex)                 [m]
+            nb_lenses = yamlval('nb_lenses',   el_dict, None)                     # Number of lenses in the CRL stack
+            focal_lenght_stack = yamlval('focal_lenght_stack',   el_dict, None)   # Focal length of the stack                             [m]
+            add_aperture = yamlval('add_aperture',   el_dict, 0)                  # If we want to add a circular aperture around the lens [Boolean]
+
 
             if A is None and t_wall is not None:
-                A = 2 * np.sqrt(ROC * (L - t_wall))
+                A = 2.0 * np.sqrt(ROC * (L - t_wall))              # derive aperture from wall thickness
             elif t_wall is None and A is not None:
-                t_wall = L - A**2 / (4 * ROC)
+                t_wall = L - (A**2) / (4.0 * ROC)                  # derive wall thickness from aperture
             else:
-                assert A is not None and t_wall is not None, "Need either A or twall for Custom_CRL, not both !"
+                raise ValueError("Custom_CRL: provide *either* A or twall (not both).")
+            print(ROC,L,A,t_wall)
 
-            E = params['photon_energy']
-            lens_elem = yamlval('lens_elem',el_dict,'Be')  # Lens element, default is Be
-            delta, beta = get_index('Be', E) # Reads the index at a given energy from Henkel tables.
 
-            Na = (np.arange(N) - N2) * params['pxsize']
-            xm, ym = np.meshgrid(Na, Na)
+            # ────────────────────────────────────────────────
+            # 2. Optical constants ---------------------------
+            # ────────────────────────────────────────────────
+            E_eV         = params['photon_energy']                   # photon energy [eV]
+            wavelength_m = h * c / (E_eV * e)                        # λ = h·c / E
+
+            lens_material     = yamlval('lens_material', el_dict, 'Be')   # default material is set to Be
+            delta, beta       = get_index(lens_material, E_eV)            # from Henke tables (https://henke.lbl.gov/optical_constants/getdb2.html)
+            print(delta,beta)
+
+            phase_per_m       = -2.0 * np.pi * delta / wavelength_m       # radians of phase delay per meter
+            absorption_factor = 2.0 * np.pi * beta / wavelength_m         # absorption exponent scale
+
+            if focal_lenght_stack is None and nb_lenses is not None:
+                focal_lenght_stack = ROC / (2 * nb_lenses * delta)       # focal length calculated from the number of lenses in the stack [m]
+            elif focal_lenght_stack is not None and nb_lenses is None:
+                nb_lenses = ROC / (2 * delta * focal_lenght_stack)      # number of lenses (could be a not integer number) needed to achieve a given focal length.
+            else:
+                raise ValueError("Custom_CRL: provide *either* focal_lenght_stack or nb_lenses (not both).")
+
+
+            # ────────────────────────────────────────────────
+            # 3. Mesh & thickness map ------------------------
+            # ────────────────────────────────────────────────
+            N   = params['N']
+            Na  = (np.arange(N) -  N // 2) * params['pxsize']       # axis in meters
+            
+            xm, ym = np.meshgrid(Na, Na)                        # xm, ym in [m]
             r = np.sqrt(xm**2 + ym**2)
 
-            thickness = np.ones_like(r) * L
-            mask = r < A
-            thickness[mask] = (xm[mask]**2 + ym[mask]**2) / ROC + t_wall
+            print(r)
 
-            transmission_map = np.exp(-k * thickness)
-            phase_map = thickness 
+            lens_half_thickness = np.full_like(r, L / 2)                # default to max thickness (outside aperture)
+            core_mask = r < A / 2 
+            print(core_mask)
+            lens_half_thickness[core_mask] = (xm[core_mask]**2 + ym[core_mask]**2) / (2 * ROC) + t_wall / 2
+            lens_thickness = 2 * lens_half_thickness
 
-            F = MultIntensity(transmission_map, F)
-            F = MultPhase(phase_map, F)
+            # ────────────────────────────────────────────────
+            # 4. Apply transmission and phase maps ----------
+            # ────────────────────────────────────────────────
+
+            if add_aperture == 1 : # Add an aperture around the lens
+                custom_ap = {}
+                custom_ap['elem'] = 'Hf'
+                custom_ap['thickness'] = 0.0001
+                custom_ap['shape'] = 'circle'
+                custom_ap['size'] = A
+                custom_ap['invert'] = 1
+                Aperture_transmission,phasemap = doap(custom_ap,params)   # creating the transmission and phase map of the lens aperture
+                F = MultIntensity(Aperture_transmission,F)                # multiplying intensity of the field by the lens aperture
+            
+            transmission_map = np.exp(-nb_lenses * absorption_factor * lens_thickness)         # intensity attenuation
+            phase_map        = nb_lenses * phase_per_m * lens_thickness                        # phase delay [radians]
+
+            F = MultIntensity(transmission_map, F)  # apply intensity mask
+            F = MultPhase(phase_map, F)             # apply phase shift
+
+
+            # ───────────────────────────────────────────────────────────────
+            #  Combined 2-D & 1-D plots for Custom CRL  (+ aperture) ---------
+            # ───────────────────────────────────────────────────────────────
+            extent_um = [
+                Na[0] * 1e6, Na[-1] * 1e6,
+                Na[0] * 1e6, Na[-1] * 1e6
+            ]
+
+            center_idx = N // 2
+            x_um = Na * 1e6                      # horizontal axis in µm
+
+            thickness_1d     = lens_thickness[center_idx, :] * 1e6            # [µm]
+            transmission_1d  = transmission_map[center_idx, :]
+            phase_1d         = phase_map[center_idx, :]
+
+            # ---------- NEW: include aperture 1-D profile if requested -----
+            if add_aperture:
+                aperture_1d = Aperture_transmission[center_idx, :]
+
+            # ---------- make room for an extra column ----------------------
+            ncols = 4 if add_aperture else 3
+            fig, axes = plt.subplots(2, ncols, figsize=(5.2 * ncols, 7))      # scale width
+
+            # --- 2-D thickness map -----------------------------------------
+            im0 = axes[0, 0].imshow(nb_lenses * lens_thickness * 1e6,
+                                    cmap='inferno', extent=extent_um, origin='lower')
+            axes[0, 0].set(title='2-D Thickness [µm]', xlabel='x [µm]', ylabel='y [µm]')
+            plt.colorbar(im0, ax=axes[0, 0], fraction=0.046)
+
+            # --- 2-D transmission map --------------------------------------
+            im1 = axes[0, 1].imshow(transmission_map, cmap='viridis',
+                                    extent=extent_um, origin='lower')
+            axes[0, 1].set(title='2-D Transmission', xlabel='x [µm]', ylabel='y [µm]')
+            plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
+
+            # --- 2-D phase (wrapped) ---------------------------------------
+            im2 = axes[0, 2].imshow(phase_map, cmap='twilight',
+                                    extent=extent_um, origin='lower')
+            axes[0, 2].set(title='2-D Phase [rad]', xlabel='x [µm]', ylabel='y [µm]')
+            plt.colorbar(im2, ax=axes[0, 2], fraction=0.046)
+
+            # --- 2-D aperture map (only if requested) -----------------------
+            if add_aperture:
+                im3 = axes[0, 3].imshow(Aperture_transmission, cmap='gray',
+                                        extent=extent_um, origin='lower')
+                axes[0, 3].set(title='2-D Aperture\n(transmission)',
+                            xlabel='x [µm]', ylabel='y [µm]')
+                plt.colorbar(im3, ax=axes[0, 3], fraction=0.046)
+
+            # ---------------------------------------------------------------
+            # ---------------- 1-D profiles (lower row) ---------------------
+            # ---------------------------------------------------------------
+            axes[1, 0].plot(x_um, nb_lenses * thickness_1d)
+            axes[1, 0].set(ylabel='Thickness [µm]', xlabel='x [µm]',
+                        title='1-D Thickness (centre cut)')
+            axes[1, 0].grid()
+
+            axes[1, 1].plot(x_um, transmission_1d, color='green')
+            axes[1, 1].set(ylabel='Transmission', xlabel='x [µm]',
+                        title='1-D Transmission (centre cut)')
+            axes[1, 1].grid()
+
+            axes[1, 2].plot(x_um, phase_1d, color='purple')
+            axes[1, 2].set(ylabel='Phase [rad]', xlabel='x [µm]',
+                        title='1-D Phase (centre cut)')
+            axes[1, 2].grid()
+
+            # --- 1-D aperture cut (optional) -------------------------------
+            if add_aperture:
+                axes[1, 3].plot(x_um, aperture_1d, color='black')
+                axes[1, 3].set(ylabel='Aperture T', xlabel='x [µm]',
+                            title='1-D Aperture (centre cut)')
+                axes[1, 3].grid()
+
+            # ---------- optional zoom of 2-D maps --------------------------
+            lim_um = None          # set e.g. 500e-6 to zoom in
+            if lim_um is not None:
+                for ax in axes[0, :]:
+                    ax.set_xlim(-lim_um * 1e6, lim_um * 1e6)
+                    ax.set_ylim(-lim_um * 1e6, lim_um * 1e6)
+
+            plt.suptitle(
+                f"Custom CRL – {lens_material}, E = {E_eV:.1f} eV, λ = {wavelength_m*1e10:.2f} Å",
+                fontsize=14
+            )
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+            plt.savefig(projectdir / 'Lens_CRLCut_2D1D.png', dpi=300)
+            plt.show()
+
+
+
             
         ############# ELEMENT : PHASE PLATE ###########
         if el_type=='phaseplate':
@@ -1876,8 +2096,29 @@ def doit(params,elements):
             F = MultIntensity(edge_damping_aperture,F)
 
         ################## OUTPUT FIELD AT TCC #################
-        if el_name == 'TCC' and el_dict.get('output_field', 0):
-            np.savez('XrayFieldmap_TCC.npz', F = F) #saving the complex field at TCC for later estimation of VB
+        if el_name == 'TCC' and el_dict.get('VB_signal', 0):
+
+            I_cr = 4.7e19 # Critical intensity in W/cm^2
+            alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
+
+            # Calculate the intensity of IR laser :
+            f_IR = 0.1 # focal lenght of the final parabolla in m
+            D_IR = 0.1 # diameter of the final parabolla in m
+            P_peak = 200e12 # Peak power of the laser, in Watt
+            tau_FWHM = 30e-15 # Laser FWHM duration in second
+            wavelenght_IR = 800e-9 # Wavelenght of the IR laser, in m
+            phi_VB = np.pi / 4 #45 degrees angle between the IR and X beams.
+
+            I_W_cm2, x = airy_disk_map(F.grid_size, F.N, wavelenght_IR, f_IR, D_IR, P_peak, return_grid=True)
+            
+
+            VB_mask_parr =(I_W_cm2/I_cr) * (c*tau_FWHM / wavelength) * (11-3*np.cos(2*phi_VB)) * (alpha_cst / 90) * (np.pi / 2)**0.5 #mask of the intensity of IR laser at TCC (unitless)
+            VB_mask_perp =(I_W_cm2/I_cr) * (c*tau_FWHM / wavelength) * (3*np.sin(2*phi_VB)) * (alpha_cst / 90) * (np.pi / 2)**0.5 #mask of the intensity of IR laser at TCC (unitless)
+
+            F_VB_parr = MultIntensity(VB_mask_parr,F) # VB field in the parrallel channel, at TCC (lightpipe Field object)
+            F_VB_perp = MultIntensity(VB_mask_perp,F) # VB field in the perpendicular channel,at TCC (lightpipe Field object)
+
+            #np.savez('XrayFieldmap_TCC.npz', F = F) #saving the complex field at TCC for later estimation of VB
             
         ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
 

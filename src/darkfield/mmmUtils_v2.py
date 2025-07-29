@@ -1553,16 +1553,29 @@ def rez(number): #Remove the useless Exponent Zero
         return number
 
 
-
-def yamlval(key,ip,default=0):
-    if not key in ip.keys() :
+def yamlval(key, ip, default=0):
+    val = ip.get(key, default)
+    
+    # Treat both Python None and string 'None' as missing
+    if val is None or val == 'None':
         return default
-    else:
-        val=ip[key]
-        if val=='None':
-            return 0
-        else:
-            return ip[key]
+
+    # Try converting numeric-looking strings to float
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return val  # keep strings, bools, etc. as-is
+
+
+#def yamlval(key,ip,default=0):
+#    if not key in ip.keys() :
+#        return default
+#    else:
+#        val=ip[key]
+#        if val=='None':
+#            return 0
+#        else:
+#            return ip[key]
 
 #double dict value
 def ddval(ip,key1,key2,default1=0,default2=0):
