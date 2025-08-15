@@ -1,0 +1,159 @@
+start:
+  position: -11
+  type: image
+  
+beam_shaper:
+  position: -10
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 4
+  size: 0.00065
+  
+CRL3:
+  in: 1
+  position: -9
+  type: Custom_CRL
+  ROC: 200.0e-6   # Radius of curvature in [m]
+  L: 0.9e-3      # Total mechanical lens thickness [m]
+  A: 850.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 1. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+  
+O1:
+  in: 1
+  position: -7.4
+  elem: W
+  shape: realwire
+  size: 0.00022211
+  type: aperture
+  
+CRL4a:
+  in: 1
+  position: -1.215
+  type: Custom_CRL
+  ROC: 125.0e-6   # Radius of curvature in [m]
+  L: 0.5e-3      # Total mechanical lens thickness [m]
+  A: 475.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 3. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+  
+O2:
+  in: 0
+  position: -1.3
+  elem: W
+  shape: realwire
+  size: 7.0e-05
+  type: aperture
+  
+  
+TCSlit:
+  in: 1
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 10.0e-06
+  position: -0.001
+  type: aperture
+  orientate_horizontal: 1
+  
+TCC:
+  type: imager
+  position: 0
+  
+reg1:
+  in: 0
+  position: 1
+  type: reg
+  plot: 0
+  
+A1-:
+  position: 2.1
+  type: imager
+  
+A1:
+  in: 1
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 31.0e-06
+  position: 2.234
+  type: aperture
+  defect_type: triangle
+  defect_lambda: 2.0e-05
+  defect_amplitude: 2.0e-05
+  
+CRL4b:
+  in: 1
+  position: 2.434
+  type: Custom_CRL
+  ROC: 125.0e-6   # Radius of curvature in [m]
+  L: 0.5e-3      # Total mechanical lens thickness [m]
+  A: 475.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 4. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+  
+Det:
+  position: 7.5
+  type: imager
+  roi: 13
+  roi2: 75
+  
+beam:
+  offset: 0
+  size: 0.00225
+  photonenergy: 8766
+  
+simulation:
+  beamdiv: 0.0001
+  N_negative: 8000
+  N_positive: 0
+  N_squeezed: 0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  smooth: 0
+  subfigure_size_px: 1500
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - CRL3
+  - CRL4a  
+  - TCSlit
+  - TCC
+  - A1-
+  - A1
+  - CRL4b  
+  - Det
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -10.0
+  - 7.5
+  - 0.15
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -650.0
+  - 650.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50

@@ -9,7 +9,7 @@ import yaml
 import argparse
 import warnings
 
-######## Import the good backend to work on both cluster and laptop VSCODE ########
+#---------- Import the good backend to work on both cluster and laptop VSCODE -----------
 os.environ.pop("MPLBACKEND", None)
 import matplotlib
 if os.environ.get("DISPLAY", "") == "":
@@ -19,7 +19,7 @@ else:
     print("Display detected: using 'TkAgg' backend.")
     matplotlib.use("TkAgg")  # Pour ton ordi local
 import matplotlib.pyplot as plt
-##################################################################################
+#----------------------------------------------------------------------------------
 
 import numpy as np
 from pathlib import Path
@@ -122,7 +122,7 @@ for simulation_type in simulation_types:
 
     print(f"#### Doing the simulation type {simulation_type}: {sts[simulation_type]}, N={N}")
 
-    ####################### CONSTRUCTING THE LIST OF OPTICAL ELEMENTS FROM YAML FILE ################
+    #--------------- CONSTRUCTING THE LIST OF OPTICAL ELEMENTS FROM YAML FILE --------------
     Elements = []
     for name in ip:
         if name in ['beam', 'simulation', 'meta']:
@@ -130,7 +130,7 @@ for simulation_type in simulation_types:
         obj = ip[name]
         Elements.append([obj['position'], name, obj]) #Elements is a dictionnary with : Elements(0) = position, Elements(1) = name, Elements(2) = dictionnary of object properties
 
-    #################################################################################################
+    #---------------------------------------------------------------------------------------
 
     
     removable = ['O1', 'O2', 'O1wb'] # elements to remove for the positive simulation
@@ -152,6 +152,11 @@ for simulation_type in simulation_types:
 
     params = ip['simulation']
     XFEL_photon_E = ip['beam']['photonenergy']
+    params['photons_total']  = float(ip['beam']['photons_total']) if 'photons_total' in ip['beam'] else None
+    params['pulse_duration'] = float(ip['beam']['pulse_duration']) if 'pulse_duration' in ip['beam'] else None
+    params['intensity_units'] = df.yamlval('intensity_units', ip['simulation'], 'relative')
+
+
     
     params.update({
         'N': N,
@@ -184,72 +189,11 @@ for simulation_type in simulation_types:
 
     params['projectdir'] = projectdir  
 
-    ############################ RUN THE SIMULATION ###########################
+    #------------- RUN THE SIMULATION -----------
     params, trans, figs = df.doit(params, Elements) 
-    ###########################################################################
-    
-    axInfo = plt.subplot(params['fig_rows'], params['fig_cols'], 2)
-    col = rofl.o() if simulation_type == 0 else rofl.g() if simulation_type == 1 else 'k'
-    plt.semilogy(trans, '*-', color=col)
-    plt.ylim(1e-10, 1)
-    fs = 10
-    plt.text(0, 0.5, f'N = {params["N"]:.0f}', fontsize=fs)
-    plt.text(0, 1e-1, f'T = {params["integ"]:.1e}', fontsize=fs)
 
-    centralelement = 'TCC' if 'TCC' in params['intensities'] else 'PH'
-    if centralelement in params['intensities']:
-        tr_scat = df.yamlval('transmission_of_scatterer_L2', params, 1)
-        t1 = params['intensities'][centralelement] / params['intensities']['start']
-        plt.text(0, 1e-2, f'start->{centralelement} = {t1:.1e}', fontsize=fs)
-        if 'roi' in params['intensities']:
-            t2 = params['intensities']['roi'] / params['intensities'][centralelement] / tr_scat
-            if simulation_type == 0:
-                t22 = params['intensities']['roi2'] / params['intensities'][centralelement] / tr_scat
-                plt.text(0, 1e-3, f'SFA13 = {t2:.1e}', fontsize=fs, color='r')
-                plt.text(0, 1e-8, f'SFA75 = {t22:.1e}', fontsize=fs, color='r')
-            if simulation_type == 1:
-                plt.text(0, 1e-3, f'{centralelement}->roi = {t2:.1e}', fontsize=fs)
-                if 'roi2' in params['intensities']:
-                    t22 = params['intensities']['roi2'] / params['intensities'][centralelement]
-                    plt.text(0, 1e-6, f'{centralelement}->roi2 = {t22:.1e}', fontsize=fs)
 
-    if 'A1' in ip:
-        plt.text(0, 1e-4, f'1: {ip["A1"]["size"] / um:.1f} μm', fontsize=fs)
-    if 'A3' in ip:
-        plt.text(0, 1e-5, f'A3: {ip["A3"]["size"] / um:.1f} μm', fontsize=fs)
-    if 'A2' in ip:
-        plt.text(0, 1e-6, f'A2: {ip["A2"]["size"] / um:.1f} μm', fontsize=fs)
-    if 'A4' in ip:
-        plt.text(0, 1e-7, f'A4: {ip["A4"]["size"] / um:.1f} μm', fontsize=fs)
-    if params['duration'] > 100:
-        plt.text(0, 1e-9, f'Duration {params["duration"] / 60:.0f} min.', fontsize=fs)
-    else:
-        plt.text(0, 1e-9, f'Duration {params["duration"]:.0f} s', fontsize=fs)
-
-    plt.suptitle(fn[:-7], color=rofl.b(), fontsize=16, y=0.95)
-    dpi = df.yamlval('figure_dpi', ip['simulation'], 300)
-    #mu.savefig(projectdir + 'figures/' + fn, dpi=dpi)
-    mu.savefig(str (projectdir / 'figures' / fn) , dpi=dpi)
-    mu.print_times()
-    params['ax_profiles'] = None
     mu.dumpPickle([ip, params], str(projectdir) + '/pickles/' + fn + '_res')
 
-    if 'flow' in params and isinstance(params['flow'], (list, np.ndarray)) and len(params['flow']) > 0:
-        flow_figs = not df.yamlval('flow_auto_save', ip['simulation'], False)
-        if force_flow_figs is not None:
-            flow_figs = force_flow_figs
-        flow_figs = 0
-        gyax = df.yamlval('flow_plot_gyax', ip['simulation'], [-200, 1000, 10])
-        clim = df.yamlval('flow_plot_clim', ip['simulation'], [1e-11, 50])
-        #print(str(projectdir.relative_to('/home/yu79deg')), fn )
-
-        if "yu79deg" in str(projectdir):
-            rel_path = projectdir.relative_to("/home/yu79deg")
-        else:
-            rel_path = projectdir  # ou projectdir.name
-        print(str(rel_path), fn)
-        
-        df.flow_plot(str(projectdir), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
-        #df.flow_plot(str(projectdir.relative_to('/home/yu79deg')), fn , flow_figs=flow_figs, gyax_def=gyax, cl=clim)
 
 print('Simulation finished.')

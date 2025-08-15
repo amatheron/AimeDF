@@ -3,6 +3,7 @@ import numpy as np
 import sys
 import os
 import time
+from LightPipes import Field
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
@@ -10,20 +11,70 @@ from matplotlib.colors import LogNorm
 from astropy.io import ascii
 from PIL import Image
 from scipy import signal
+from scipy.ndimage import map_coordinates
 
 from pathlib import Path
 
 from skimage.transform import resize
 from scipy.signal import fftconvolve
 from scipy.ndimage import gaussian_filter1d
-from scipy.constants import e, epsilon_0, hbar, c
+from scipy.constants import e, epsilon_0, hbar, c, h, pi
 from scipy.special import j1
 
 import darkfield.rossendorfer_farbenliste as rofl
 import darkfield.mmmUtils_v2 as mu
 import darkfield.regularized_propagation_v2 as rp
 
+from dataclasses import dataclass
+from typing import Dict   # only for type hints
 
+@dataclass
+class FieldBundle:
+    """
+    Holds one or more LightPipes `Field` objects that propagate together.
+    For the moment we keep only one channel called **'main'**; the extra
+    VB channels will slot in later with no API change.
+    """
+    fields: Dict[str, Field]   # e.g. {"main": F}
+    z_pos: float               # current longitudinal position [m]
+    reg: Dict                  # options for regularised propagation
+
+def propagate_bundle(bundle: 'FieldBundle',
+                     dz: float,
+                     method: str = 'FFT') -> 'FieldBundle':
+    """
+    Move *all* fields contained in *bundle* forward by *dz* using the same
+    rules that the monolithic `doit` loop currently applies to `F`.
+    In this first step we still have only one field, but we already
+    iterate over the dict so the function won’t need touching again when
+    we add `F_VB_parr` and `F_VB_perp` later.
+    """
+    if dz == 0:
+        return bundle  # nothing to do
+
+    for key, F in bundle.fields.items():
+        if not bundle.reg.get("regularized_propagation", False):
+            if method.lower() == 'fresnel':
+                F = Fresnel(dz, F)
+            elif method.upper() == 'FFT':
+                F = Forvard(dz, F)
+            else:
+                raise ValueError(f"Unknown propagation method: {method}")
+        else:
+            # Local import avoids a hard dependency if you don’t use RP
+            #import darkfield.regularized_propagation_v2 as rp
+            F = rp.Forvard_reg(
+                    F,
+                    bundle.reg.get("reg_parabola_focus"),
+                    dz,
+                    False
+                 )
+     
+        bundle.fields[key] = F   # write back the propagated field
+
+    bundle.z_pos += dz
+    return bundle
+# ──────────────────────────────────────────────────────────────────────
 
 
 
@@ -105,9 +156,8 @@ def update_object_from_yaml(obj,name,ip):
     return obj
 
 def get_n(elem,E):
-
     #assuming 9831 eV  10μm Zn: 0.17035
-#    assert E==8766, print("forcing E as 8766eV, don't have other constants")
+    #assert E==8766, print("forcing E as 8766eV, don't have other constants")
     beta=-1
     if elem=='Zn': k=-np.log(0.17035)/(10*um)
     if elem=='W':
@@ -144,7 +194,7 @@ def get_n(elem,E):
         beta=5.079e-7
 
     if elem=='Ti':
-#            k=-np.log(0.58629)/(10*um)
+    #k=-np.log(0.58629)/(10*um)
         delta=9.12e-6
         beta=5.359e-7
     if E==8766:       #for the Ge 440 case at 8766 eV
@@ -172,9 +222,9 @@ def get_n(elem,E):
         if elem=='acrylate_resin':  #"5"
             delta=3.4461118E-06
             beta=6.87303858E-09
- #C14H18O7 Density=1.2
- #Energy(eV), Delta, Beta
-#  8766.  3.4461118E-06  6.87303858E-09
+            #C14H18O7 Density=1.2
+            #Energy(eV), Delta, Beta
+            #  8766.  3.4461118E-06  6.87303858E-09
         if elem=='C':  #6
             delta=5.95414031E-06
             beta=8.17077517E-09
@@ -247,9 +297,6 @@ def get_n(elem,E):
     k=beta/lambd*4*3.14 #based on https://henke.lbl.gov/optical_constants/intro.html
     thickness_to_phaseshift=(delta)/(c*(1-delta)) *c /lambd* 2*3.14
     thickness_to_phaseshift=thickness_to_phaseshift*-1  #this is just as that shall be [March 2015]; Otherwise lenses do not lense.
-#        deltat=wireprof*(delta)/(c*(1-delta)) #derived by me...
- #       deltas=deltat*c #how much does it shift
-  #      phaseshift=deltas/lambd* 2*3.14
     return beta,delta,k,thickness_to_phaseshift
 
 _index_cache = {}
@@ -261,6 +308,13 @@ def get_index(elem, E, table_dir=None):
     """
     global _index_cache
 
+    # Special case for Hafnium
+    if elem == 'Hf':
+        return 3.2887e-6 , 1.988e-5
+    
+    if elem=='W':  
+        return 2.85704482E-06 , 3.86332977E-05
+    
     # Locate optical_constants folder relative to the file location of diffra_v2.py
     if table_dir is None:
         table_dir = Path(__file__).parent / "optical_constants"
@@ -284,10 +338,51 @@ def get_index(elem, E, table_dir=None):
     energies, delta_vals, beta_vals = _index_cache[elem]
     delta = np.interp(E, energies, delta_vals)
     beta  = np.interp(E, energies, beta_vals)
-    return delta, beta
+    return beta, delta
+
+
+def thickness_to_phase_and_transmission(E_eV, delta, beta):
+    """
+    Compute phase shift and absorption coefficient per meter thickness
+    for given photon energy and refractive index components.
+
+    Parameters
+    ----------
+    E_eV : float
+        Photon energy in eV
+    delta : float
+        Refractive index decrement (n = 1 - delta + i beta)
+    beta : float
+        Absorption index
+
+    Returns
+    -------
+    thickness_to_phase : float
+        Phase shift per meter thickness [rad/m]
+    thickness_to_transmission : float
+        Absorption coefficient per meter thickness [1/m]
+        (so that transmission = exp(-thickness_to_transmission * thickness))
+    """
+    # Convert energy in eV to wavelength in meters
+    E_J = E_eV * e
+    lam = h * c / E_J
+
+    # OLD VERSION FROM MICHAL :
+    lambd=12398/E_eV*1e-10 #nmn go to ~<
+    k_transmission = beta/lambd*4*3.14 #based on https://henke.lbl.gov/optical_constants/intro.html
+    thickness_to_phase = (delta)/(c*(1-delta)) *c /lam* 2*3.14
+    # Phase shift per meter
+    #thickness_to_phase = -(2 * pi * delta) / lam
+
+    # Transmission decay coefficient per meter
+    #k_transmission = (4 * pi * beta) / lam
+
+    return thickness_to_phase, k_transmission
+
 
 
 def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
+
     #r=0.5
     x=xax
     #r0=2r0/2
@@ -376,8 +471,11 @@ def do_phaseplate(el_dict,params,debug=0):
 
     ############### Multiplying the phase defect by the number of lenses #########
     thickness = thickness * num
-    elem = 'Be'
-    beta,delta,k,thickness_to_phaseshift = get_n(elem,E)
+    #elem = 'Be'
+    elem = params.get('lens_material', 'Be')
+    print(f"Material in the do_phaseplate function = {elem}")
+    beta ,delta  = get_index(elem, E)
+    thickness_to_phaseshift, k_transmission = thickness_to_phase_and_transmission(E, delta, beta)
     phaseshiftmap = thickness * thickness_to_phaseshift
 
     if 0:
@@ -654,36 +752,6 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
             maxi=np.max(wireprof)
             wireprof=maxi-wireprof
 
-
-        ##INVERTING ---might not work anymore (March 2025)
-        if yamlval('invertphaseshift',pars):  #inverting phase-shift-wise
-            if yamlval('inversiontype',pars)=='thickness':
-                print('inverting by thickness')
-                maxth=np.max(wireprof)
-                wireprof=maxth-wireprof
-                newelem=pars['newelem']
-                beta,delta,k,thickness_to_phaseshift=get_n(newelem,E)
-                phaseshift=wireprof*thickness_to_phaseshift
-
-            else:
-                beta,delta,k,thickness_to_phaseshift=get_n(elem,E)
-                phaseshift=wireprof*thickness_to_phaseshift
-                newelem=pars['newelem']
-                if yamlval('invertphaseshift-maxps',pars):
-                    maxpp=yamlval('invertphaseshift-maxps',pars)
-                else:
-                    maxpp=np.max(phaseshift)
-                newpp=maxpp-phaseshift
-                newpp[newpp<0]=0
-                newbeta,newdelta,k,newthickness_to_phaseshift=get_n(newelem,E)
-                wireprof=newpp/newthickness_to_phaseshift
-
-                phaseshift=newpp
-                thickness_to_phaseshift=newthickness_to_phaseshift
-
-        #ones=Na*0+1
-        #thicknessmap=np.matmul(np.transpose(np.matrix(wireprof)),(np.matrix(ones)))
-
         ones = np.ones(N)
         orientate = pars.get('orientate_horizontal', 0)
 
@@ -880,7 +948,8 @@ def get_wire_like_profile(pars,params,debug):
         size=yamlval('size',pars,-1)
         if size>0:  #estimating the d2 from effecitve size;
             par=a*np.abs(x-d)**n
-            beta,delta,k,thickness_to_phaseshift=get_n(elem,params['photon_energy'])
+            beta, delta  = get_index(elem,params['photon_energy'])
+            thickness_to_phaseshift,k = thickness_to_phase_and_transmission(params['photon_energy'], delta, beta)
             par_trans=np.exp(-k*par) #transmission
             sel=(par_trans>np.exp(-1))*(x>0)
             edgex=np.min(x[sel])
@@ -1052,10 +1121,10 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             thicknessmap=thicknessmap2*thicknessmap
 
 
-    #CONVERTING THICKNESS MAP INTO TRANSMISSION AND PHASESHIFT MAP
+        #CONVERTING THICKNESS MAP INTO TRANSMISSION AND PHASESHIFT MAP
         elem=pars['elem']
-
-        beta,delta,k,thickness_to_phaseshift = get_n(elem,E)
+        beta ,delta  = get_index(elem,E)
+        thickness_to_phaseshift,k = thickness_to_phase_and_transmission(E, delta, beta)
         transmissionmap = np.exp(-k*thicknessmap)
         phaseshiftmap = thicknessmap * thickness_to_phaseshift
         if debug:
@@ -1142,34 +1211,39 @@ def doap(pars,params=[],debug=0,return_thickness=0):
     else:
         return transmissionmap,phaseshiftmap
 
-def prepare_image(img,ps=750,max_pixels=300,ZoomFactor=1,log=1,norms=[0,0],el_dict=None):
+
+def prepare_image(img, ps=750, max_pixels=300, ZoomFactor=1, log=1,
+                  norms=[0,0], el_dict=None, normalize=True):
     from scipy.interpolate import RegularGridInterpolator
-
     import cv2
-    inte=np.max(img)*ps**2
-    suma=np.sum(img)*ps**2
-    if np.sum(norms)==0:
-        norms[0]=inte
-        norms[1]=suma
-    inte=inte/norms[0]
-    suma=suma/norms[1]
-    #First: cut the central region to be shown, a given by zoom factor
 
-    if ZoomFactor>1:
-        pxc=np.shape(img)[0]
-        newpxcH=int(pxc/ZoomFactor/2)
-        c=int(pxc/2)
-        imgC=img[c-newpxcH:c+newpxcH,c-newpxcH:c+newpxcH]
+    inte = np.max(img) * ps**2
+    suma = np.sum(img) * ps**2
+
+    if normalize:
+        if np.sum(norms) == 0:
+            norms[0] = inte
+            norms[1] = suma
+        inte = inte / norms[0]
+        suma = suma / norms[1]
+
+    # First: cut the central region to be shown, as given by zoom factor
+    if ZoomFactor > 1:
+        pxc = np.shape(img)[0]
+        newpxcH = int(pxc / ZoomFactor / 2)
+        c = int(pxc / 2)
+        imgC = img[c - newpxcH : c + newpxcH, c - newpxcH : c + newpxcH]
     else:
-        imgC=img
-    #Second: make sure the result is not bigger then 300px size (max_pixel)
-    pxc=np.shape(imgC)[0]
-    if pxc>max_pixels:
-        #dsize=max_pixels/pxc
-        dsize=[max_pixels,max_pixels]
-#        dsize=(np.array(np.shape(img))/downscale).astype('int')
-        imgC= cv2.resize(imgC, dsize=dsize, interpolation=cv2.INTER_CUBIC)
-    return imgC,norms,[inte,suma]
+        imgC = img
+
+    # Second: make sure the result is not bigger than max_pixels
+    pxc = np.shape(imgC)[0]
+    if pxc > max_pixels:
+        dsize = [max_pixels, max_pixels]
+        imgC = cv2.resize(imgC, dsize=dsize, interpolation=cv2.INTER_CUBIC)
+
+    return imgC, norms, [inte, suma]
+
 
 def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
     if log:
@@ -1181,10 +1255,10 @@ def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
 
     ps2=ps/2/um
     extent=(-ps2,ps2,-ps2,ps2)
-    imgC=imgC/np.max(imgC)
+    #imgC=imgC/np.max(imgC)
     plt.imshow(imgC,norm=norm,cmap=rofl.cmap(),extent=extent)
-    plt.clim(1e-3,1)
-    plt.clim(1e-5,1)
+    #plt.clim(1e-3,1)
+    #plt.clim(1e-5,1)
     ax=plt.gca()
     ########### PLOT OF THE TEXT AT THE TOP LEFT : Total size of the image in um ####################
     if ps/um >=10:
@@ -1475,10 +1549,7 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
 
 
 
-
-
-
-def airy_disk_map(L, N, lam=800e-9, f=0.10, D=0.10, P_peak=200, return_grid=False):
+def airy_disk_map(L, N,  P_peak, lam=800e-9, f=0.10, D=0.10, return_grid=False, debug=False):
     """
     Build a 2-D Airy-disk intensity map on a square grid of side-length L.
 
@@ -1517,205 +1588,456 @@ def airy_disk_map(L, N, lam=800e-9, f=0.10, D=0.10, P_peak=200, return_grid=Fals
 
     kr  = (np.pi * D * r) / (lam * f)
     A   = np.ones_like(r)
-    mask = r != 0                     # avoid 0/0 at the origin
+    mask = r != 0
     A[mask] = 2.0 * j1(kr[mask]) / kr[mask]
-    airy = A**2                       # intensity
-    print(L,N)
-    # ---------------------------------------------------------------------
-    #  Compute peak intensity based on laser power
-    # ---------------------------------------------------------------------
-    I_W_cm2  = P_peak * airy / 1e4          # Intensity map of the laser in W/cm²
-    I_max_W_cm2 = np.max(I_W_cm2) # Peak intensity of the RelaX laser in W/cm^2
-    a0 = 0.68 * (1e-18 *I_max_W_cm2 )**0.5 # Maximum a0 of the laser
+    airy = A**2  # PSF
 
-    ############# DEBUG Plot ############
-    if 1:
+    # Normalize so that integral ≈ 1 (finite window approximation)
+    norm = np.sum(airy) * dx * dx
+    if norm <= 0:
+        raise RuntimeError("Airy normalization failed.")
+    airy /= norm
+
+    # Convert to intensity [W/cm^2]; treat airy as spatial distribution of power
+    I_W_cm2 = (P_peak * airy) / 1e4
+
+    I_max = float(I_W_cm2.max())
+    a0_pk = a0_from_I_lambda(I_max, lam)
+
+    if debug:
         plt.figure()
-        plt.imshow(I_W_cm2, extent=[x[0]*1e6, x[-1]*1e6, x[0]*1e6, x[-1]*1e6])
-        plt.xlabel("x [μm]")
-        plt.ylabel("y [μm]")
-        plt.title("I [W/cm²]")
-        plt.colorbar(label="Intensity [W/cm²]")
-        plt.savefig("/home/yu79deg/darkfield_p5438/IR_intensity.png", dpi=300)
+        plt.imshow(I_W_cm2, extent=[x[0]*1e6, x[-1]*1e6, x[0]*1e6, x[-1]*1e6], origin='lower')
+        plt.xlabel("x [μm]"); plt.ylabel("y [μm]")
+        plt.title("Airy: I [W/cm²]"); plt.colorbar(label="Intensity [W/cm²]")
+        plt.show()
+        print(f"[Airy] ∫ airy dx dy ≈ {np.sum(airy)*dx*dx:.6f}")
+        print(f"[Airy] Peak intensity: {I_max:.3e} W/cm² ; a0_peak(λ={lam*1e9:.0f} nm) ≈ {a0_pk:.3f}")
+
+    return (I_W_cm2, x) if return_grid else I_W_cm2
+
+
+
+
+
+def gaussian_spot_map(
+L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
+    P_peak, return_grid=False, debug=False
+):
+    """
+    2-D circular Gaussian intensity map on an LxL window, NxN samples.
+    fwhm_diameter: full width at half maximum (diameter) of the spot [m].
+    Normalized to integrate to 1, then scaled by peak power. Returns W/cm^2.
+
+    Uses I(r) ∝ exp(-2 r^2 / w0^2), with w0 the 1/e^2 radius.
+    Relation: FWHM_diameter = sqrt(2 ln 2) * w0  =>  w0 = FWHM / sqrt(2 ln 2).
+    Normalized Gaussian in 2D: G(r) = (2 / (π w0^2)) * exp(-2 r^2 / w0^2).
+    """
+
+    projectdir = Path("/home/yu79deg/darkfield_p5438/Aime")
+
+    dx = L / N
+    x  = (np.arange(N) - N/2) * dx
+    X, Y = np.meshgrid(x, x, indexing='ij')
+    r    = np.hypot(X, Y)
+
+    if fwhm_diameter <= 0:
+        raise ValueError("fwhm_diameter must be > 0.")
+    w0 = fwhm_diameter / np.sqrt(2*np.log(2))  # 1/e^2 radius
+
+    # Properly normalized 2D Gaussian that integrates to 1
+    G = (2.0 / (np.pi * w0**2)) * np.exp(-2.0 * (r**2) / (w0**2))
+
+    I_W_cm2 = (P_peak * G) / 1e4
+
+    if debug:
+        lambda_IR = 800e-9 # Hardcoded here : it is just for the debug plot.
+
+        # ---------- 2D zoomed image (± 3 * λ) ----------
+        r_zoom = 3.0 * float(lambda_IR)  # metres
+        x_um = x * 1e6
+        extent_um = [x_um[0], x_um[-1], x_um[0], x_um[-1]]
+
+        fig, (ax2d, ax1d) = plt.subplots(1, 2, figsize=(10, 4.2))
+        im = ax2d.imshow(
+            I_W_cm2,
+            extent=extent_um, origin='lower'
+        )
+        ax2d.set_xlabel("x [µm]"); ax2d.set_ylabel("y [µm]")
+        ax2d.set_title("Gaussian: I [W/cm²]")
+        cb = plt.colorbar(im, ax=ax2d); cb.set_label("W/cm²")
+
+        # Apply zoom limits, but clip to the window if the box is larger than L
+        lim = min(r_zoom, L/2) * 1e6
+        ax2d.set_xlim(-lim, +lim)
+        ax2d.set_ylim(-lim, +lim)
+
+        # ---------- 1D lineout through the center & FWHM from data ----------
+        j = N//2                                  # central column (≈ y=0)
+        x_line = x.copy()
+        I_line = I_W_cm2[:, j]
+        Imax   = float(I_line.max())
+        half   = 0.5 * Imax
+
+        # Find FWHM by linear interpolation around half-maximum on both sides
+        i0 = int(np.argmax(I_line))
+        # left crossing
+        il = np.where(I_line[:i0] < half)[0]
+        if il.size:
+            k = il[-1]
+            xL = x_line[k] + (half - I_line[k]) * (x_line[k+1]-x_line[k]) / (I_line[k+1]-I_line[k])
+        else:
+            xL = x_line[0]
+        # right crossing
+        ir = np.where(I_line[i0:] < half)[0]
+        if ir.size:
+            k2 = i0 + ir[0] - 1
+            xR = x_line[k2] + (half - I_line[k2]) * (x_line[k2+1]-x_line[k2]) / (I_line[k2+1]-I_line[k2])
+        else:
+            xR = x_line[-1]
+
+        fwhm_meas = (xR - xL)         # metres; this is the *diameter*
+        fwhm_theo = float(fwhm_diameter)
+
+        ax1d.plot(x_line*1e6, I_line, lw=1.6)
+        ax1d.axhline(half, color='gray', ls='--', lw=1)
+        ax1d.axvline(xL*1e6, color='gray', ls=':', lw=1)
+        ax1d.axvline(xR*1e6, color='gray', ls=':', lw=1)
+        ax1d.set_xlabel("x [µm]"); ax1d.set_ylabel("I [W/cm²]")
+        ax1d.set_title("Central lineout & FWHM check")
+        ax1d.text(
+            0.05, 0.95,
+            f"Peak = {Imax:.3e} W/cm²\n"
+            f"FWHM (meas) = {fwhm_meas*1e6:.3f} µm\n"
+            f"FWHM (theo) = {fwhm_theo*1e6:.3f} µm",
+            transform=ax1d.transAxes, ha='left', va='top'
+        )
+        ax1d.grid(True)
+        ax1d.set_xlim(-lim, +lim)
+
+        fig.tight_layout()
+        plt.savefig(projectdir / 'gaussian_debug.png', dpi=300)
         plt.show()
 
-        print(f"Check: ∫ airy dx dy = {airy.sum() * dx * dx:.5f} (should be ~1)")
-        print(f"Peak intensity :  {I_max_W_cm2:.3e} W/cm²")
-        print(f"a0 peak : {a0} ")
-    
-    if return_grid:
-        return I_W_cm2, x
-    return I_W_cm2
+        # Console checks
+        print(f"[Gauss] ∫ G dx dy (analytic) = 1.000000")
+        print(f"[Gauss] ∫ G dx dy (numeric on window) ≈ {np.sum(G)*dx*dx:.6f}")
+        print(f"[Gauss] Peak intensity (meas): {float(I_W_cm2.max()):.3e} W/cm²")
+        print(f"[Gauss] FWHM (meas) = {fwhm_meas*1e6:.3f} µm ; FWHM (theo) = {fwhm_theo*1e6:.3f} µm")
+        print("Saved figure: gaussian_debug.png")
+
+    return (I_W_cm2, x) if return_grid else I_W_cm2
 
 
 
 
-#############################################################################
 
-#############################################################################
-
-#############################################################################
-
-
-## Params = all the parameters coming from the yaml file.
-## F = Electric field
-## I = 2D map of intensity
-## measures = an array with the maximum and sum of the intensity map
-## im, or imC = image prepared by the "prepare_image" function. 
-## norms = [0,0] in the first passage of the loop and then norm=[integral / normalised , maximum] which gets updated at each passage in the loop.
-## elements : Dictionnary of the optical elements : elements = { z position, element name, properties dictionnary}
-
-
+def peak_power(P_peak=None, E=None, tau_FWHM=None):
+    """
+    Return peak power [W]. If P_peak is given, use it.
+    Otherwise compute it from pulse energy E [J] and FWHM duration tau_FWHM [s]
+    assuming a Gaussian temporal envelope:
+        E = P0 * tau_FWHM * sqrt(pi / (4 ln 2))
+      => P0 = E * sqrt(4 ln 2 / pi) / tau_FWHM
+    """
+    if P_peak is not None:
+        return float(P_peak)
+    if (E is not None) and (tau_FWHM is not None):
+        return float(E * np.sqrt(4*np.log(2)/np.pi) / tau_FWHM)
+    raise ValueError("Provide P_peak or (E and tau_FWHM).")
 
 
-def doit(params,elements):
 
-    projectdir = Path(params.get("projectdir", "."))
-    basepath = Path(params["projectdir"]).parent
-    
-    #method=params['method']
-    mu.clear_times()
-    mu.tick()
-    fig=plt.gcf()
 
-    method = 'FFT' #Simon: I like Forvard ('FFT') more. Regularize propagation also uses FFT method
-    method = yamlval('method',params,'FFT')
-    norms = [0,0]
-    dtype = np.complex64
-    params['pxsize'] = params['propsize'] / params['N']
-    N = params['N']
-    max_pixels = yamlval('subfigure_size_px',params,300)
-    if max_pixels>N: max_pixels=N
-    auto_flow = yamlval('flow_auto_save',params)
-    if 'flow' in params:
-        flowdef=params['flow']
-        flowposs= None
-        if np.ndim(flowdef)==2:
-            flowposs=np.array([])
-            for r in np.arange(np.shape(flowdef)[0]):
-                ff=flowdef[r]
-                flowp1=np.arange(ff[0],ff[1],ff[2])
-                flowposs=np.concatenate((flowposs,flowp1))
+def a0_from_I_lambda(I_W_cm2, lam_m):
+    """
+    a0 ≈ 0.855 * sqrt(I[10^18 W/cm^2]) * λ[μm]
+    """
+    lam_um = lam_m * 1e6
+    return 0.855 * np.sqrt(I_W_cm2 * 1e-18) * lam_um
 
-        if np.size(flowdef)==3:
-            flowposs=np.arange(flowdef[0],flowdef[1],flowdef[2])
-        if flowposs is not None:
-            for fi,flowpos in enumerate(flowposs):
-                fe={}
-                fe['type']='imager'
-                fe['position']=flowpos
-                fe['plot']=yamlval('flow_images',params,0)
-                fe['zoom']=yamlval('flow_zoom',params,1)
-                flowname='flow_{:.2f}'.format(flowpos)
-                flowname='flow_{:03.0f}_{:.2f}'.format(fi,flowpos)
-                EE=[flowpos,flowname,fe]
-                elements.append(EE)
-        if auto_flow:
-            #ffdir=params['projectdir']+'flow_figs/'+params['filename']+'_auto/' #ancienne version avant compatibilite avec cluster et laptop
-            ffdir = Path(params["projectdir"]) / "flow_figs" / f"{params['filename']}_auto"
-            mu.mkdir(ffdir,0)
-    elements = sort_elements(elements)
-    wavelength = 12398/params['photon_energy']/10*nm
-    integ = 0
 
-    ######## Begin simulation : initialize the beam ######
-    F = Begin(params['propsize'],wavelength,N,dtype=dtype)
-    propsize = params['propsize']
-    F = GaussBeam(F, params['beamsize'],x_shift=params['gauss_x_shift'],tx=params['gauss_x_tilt'])
-    F_pos = elements[0][0] #the starting position of my beamline
-    
-    figs_to_save = yamlval('figs_to_save',params,[])
-    figs_to_export = yamlval('figs_to_export',params,[])
-    if 'edge_damping' in params:
-        do_edge_damping=1
-        edge_damping_aperture = do_edge_damping_aperture(params)
+
+
+def handle_custom_CRL(F: Field,
+                      el_dict: dict,
+                      params: dict,
+                      projectdir: Path) -> Field:
+    """
+    Build transmission & phase maps for a ‘Custom_CRL’ element
+    and apply them to *F*.  Also creates the 2-D / 1-D diagnostic
+    plots (optional aperture included).
+    Returns the modified field.
+    """
+    # ────────────────────────────────────────────────
+    # 1. Read geometry from YAML ---------------------
+    # ────────────────────────────────────────────────
+    ROC       = yamlval('ROC',   el_dict, None)                           # Radius of curvature of the parabolic surface          [m]
+    L         = yamlval('L',     el_dict, None)                           # Total mechanical lens thickness                       [m]
+    A         = yamlval('A',     el_dict, None)                           # Geometric aperture radius                             [m]
+    t_wall    = yamlval('twall', el_dict, None)                           # Minimal lens thickness (apex-to-apex)                 [m]
+    nb_lenses = yamlval('nb_lenses',   el_dict, None)                     # Number of lenses in the CRL stack
+    focal_lenght_stack = yamlval('focal_lenght_stack',   el_dict, None)   # Focal length of the stack                             [m]
+    add_aperture = yamlval('add_aperture',   el_dict, 0)                  # If we want to add a circular aperture around the lens [Boolean]
+
+
+    if A is None and t_wall is not None:
+        A = 2.0 * np.sqrt(ROC * (L - t_wall))              # derive aperture from wall thickness
+    elif t_wall is None and A is not None:
+        t_wall = L - (A**2) / (4.0 * ROC)                  # derive wall thickness from aperture
     else:
-        do_edge_damping=0
+        raise ValueError("Custom_CRL: provide *either* A or twall (not both).")
+    
+    print(f"ROC = {ROC*1e6:.0f} um, L = {L*1e3:.1f} mm, Diameter Aperture A = {A*1e6:.0f} um, Apex thickness t_wall = {t_wall*1e6:.0f} um")
 
-    figs = {} #Definition of the pickle "figs"
-    export = {}
 
-    pi = params['fig_start']
-    trans = np.zeros(len(elements)+1)*np.nan
-    numel=len(elements)
-    intensities={}
-    N2=int(N/2)
-    Na=(np.arange(N)-0.5*N)*params['pxsize']/um
-    profi=0
-    save_parts=yamlval('save_parts',params,0)
-    if save_parts:
-        mu.mkdir('part')
-        mu.savefig('part/'+params['filename']+'__start')
-    #Simon start----
-    reg_prop_dict = {"regularized_propagation": False,
-                     "reg_parabola_focus": None
-                     }
-    #Simon end----
+    # ────────────────────────────────────────────────
+    # 2. Optical constants ---------------------------
+    # ────────────────────────────────────────────────
+    E_eV         = params['photon_energy']                   # photon energy [eV]
+    wavelength_m = h * c / (E_eV * e)                        # λ = h·c / E
 
-    ############## Starting the loop over elements ##########
-    for ei,E in enumerate(elements):
-        z = E[0]          #position of the element
-        el_name = E[1]    #element name
-        el_dict = E[2]    #element aperture
-        el_type = el_dict['type']
-        
-        print('{:} (elem.n.{:.0f})   ###'.format(el_name,ei))
+    lens_material     = yamlval('lens_material', el_dict, 'Be')   # default material is set to Be
+    beta, delta       = get_index(lens_material, E_eV)            # from Henke tables (https://henke.lbl.gov/optical_constants/getdb2.html)
+    print(delta,beta)
 
-        #### If the element is not inserted, skip it #######
-        if el_type=='blank':
-            pi+=1
-        if 'off' in el_type:
-            continue
-        if not yamlval('in',el_dict,1):
-            if yamlval('plot',el_dict,1):
-                pi+=1
-            print('skipping because out')
-            continue
+    phase_per_m       = -2.0 * np.pi * delta / wavelength_m       # radians of phase delay per meter
+    absorption_factor = 4.0 * np.pi * beta / wavelength_m         # absorption exponent scale
 
-        
-        
-         ####### Propagation from the current field position to the element position #######
-        delta_z = z-F_pos
-        
-        if delta_z==0:
-            print('skipping zero propagation')
-        else:
-            #Simon start----
-            simple = 1
-            if not reg_prop_dict["regularized_propagation"]: #normal propagation
-                if method=='fresnel':
-                    F=Fresnel(delta_z,F)
-                elif method=='FFT':
-                    F=Forvard(delta_z,F)
-                else:
-                    print("Beam did not propagate, even though it should have.")
-            else: #regularized propagation
-                F = rp.Forvard_reg(F, reg_prop_dict["reg_parabola_focus"], delta_z, False)
-                
-            F_pos = z #updating the field position F_pos to the element's position z
-            
-            params['pxsize'] = F.siz/N #update pixel size
-            propsize = F.siz #update physical size of grid
-            params['propsize'] = propsize
-            if reg_prop_dict["reg_parabola_focus"] is not None:
-                reg_prop_dict["reg_parabola_focus"] -= delta_z
-            #Simon end----
-        if np.abs(z)/mm >=2000:
-            lab='{:.1f} m' .format(z/m)
-        elif np.abs(z)/mm >=2:
-            lab='{:.0f}mm' .format((z)/mm)
-        else:
-            lab='{:.1f}mm' .format((z)/mm)
-            
-        ZoomFactor = yamlval('zoom',el_dict,1)
-        if ZoomFactor!=1:
-            lab=lab+' ({:.0f}x)'.format(ZoomFactor)
+    if focal_lenght_stack is None and nb_lenses is not None:
+        focal_lenght_stack = ROC / (2 * nb_lenses * delta)       # focal length calculated from the number of lenses in the stack [m]
+    elif focal_lenght_stack is not None and nb_lenses is None:
+        nb_lenses = ROC / (2 * delta * focal_lenght_stack)      # number of lenses (could be a not integer number) needed to achieve a given focal length.
+    else:
+        raise ValueError("Custom_CRL: provide *either* focal_lenght_stack or nb_lenses (not both).")
 
-         ################## Apply the element to the beam ##############
-        
-        def_do_plot = 1
-        
+    print(f"Number of lenses = {nb_lenses}, focal lenght of the stack = {focal_lenght_stack} m")
+    
+    # ────────────────────────────────────────────────
+    # 3. Mesh & thickness map ------------------------
+    # ────────────────────────────────────────────────
+    N   = params['N']
+    Na  = (np.arange(N) -  N // 2) * params['pxsize']       # axis in meters
+    
+    xm, ym = np.meshgrid(Na, Na)                        # xm, ym in [m]
+    r = np.sqrt(xm**2 + ym**2)
+
+    lens_half_thickness = np.full_like(r, L / 2)                # default to max thickness (outside aperture)
+    core_mask = r < A / 2 
+    print(core_mask)
+    lens_half_thickness[core_mask] = (xm[core_mask]**2 + ym[core_mask]**2) / (2 * ROC) + t_wall / 2
+    lens_thickness = 2 * lens_half_thickness
+
+    # ────────────────────────────────────────────────
+    # 4. Apply transmission and phase maps ----------
+    # ────────────────────────────────────────────────
+
+    if add_aperture == 1 : # Add an aperture around the lens
+        custom_ap = {}
+        custom_ap['elem'] = 'Hf'
+        custom_ap['thickness'] = 0.0001
+        custom_ap['shape'] = 'circle'
+        custom_ap['size'] = A
+        custom_ap['invert'] = 1
+        Aperture_transmission,phasemap = doap(custom_ap,params)   # creating the transmission and phase map of the lens aperture
+        F = MultIntensity(Aperture_transmission,F)                # multiplying intensity of the field by the lens aperture
+    
+    transmission_map = np.exp(-nb_lenses * absorption_factor * lens_thickness)         # intensity attenuation
+    phase_map        = nb_lenses * phase_per_m * lens_thickness                        # phase delay [radians]
+
+    F = MultIntensity(transmission_map, F)  # apply intensity mask
+    F = MultPhase(phase_map, F)             # apply phase shift
+
+
+    # ───────────────────────────────────────────────────────────────
+    #  Combined 2-D & 1-D plots for Custom CRL  (+ aperture) ---------
+    # ───────────────────────────────────────────────────────────────
+    extent_um = [
+        Na[0] * 1e6, Na[-1] * 1e6,
+        Na[0] * 1e6, Na[-1] * 1e6
+    ]
+
+    center_idx = N // 2
+    x_um = Na * 1e6                      # horizontal axis in µm
+
+    thickness_1d     = lens_thickness[center_idx, :] * 1e6            # [µm]
+    transmission_1d  = transmission_map[center_idx, :]
+    phase_1d         = phase_map[center_idx, :]
+
+    # ---------- NEW: include aperture 1-D profile if requested -----
+    if add_aperture:
+        aperture_1d = Aperture_transmission[center_idx, :]
+
+    # ---------- make room for an extra column ----------------------
+    ncols = 4 if add_aperture else 3
+    fig, axes = plt.subplots(2, ncols, figsize=(5.2 * ncols, 7))      # scale width
+
+    # --- 2-D thickness map -----------------------------------------
+    im0 = axes[0, 0].imshow(nb_lenses * lens_thickness * 1e6,
+                            cmap='inferno', extent=extent_um, origin='lower')
+    axes[0, 0].set(title='2-D Thickness [µm]', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046)
+
+    # --- 2-D transmission map --------------------------------------
+    im1 = axes[0, 1].imshow(transmission_map, cmap='viridis',
+                            extent=extent_um, origin='lower')
+    axes[0, 1].set(title='2-D Transmission', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
+
+    # --- 2-D phase (wrapped) ---------------------------------------
+    im2 = axes[0, 2].imshow(phase_map, cmap='twilight',
+                            extent=extent_um, origin='lower')
+    axes[0, 2].set(title='2-D Phase [rad]', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im2, ax=axes[0, 2], fraction=0.046)
+
+    # --- 2-D aperture map (only if requested) -----------------------
+    if add_aperture:
+        im3 = axes[0, 3].imshow(Aperture_transmission, cmap='gray',
+                                extent=extent_um, origin='lower')
+        axes[0, 3].set(title='2-D Aperture\n(transmission)',
+                    xlabel='x [µm]', ylabel='y [µm]')
+        plt.colorbar(im3, ax=axes[0, 3], fraction=0.046)
+
+    # ---------------------------------------------------------------
+    # ---------------- 1-D profiles (lower row) ---------------------
+    # ---------------------------------------------------------------
+    axes[1, 0].plot(x_um, nb_lenses * thickness_1d)
+    axes[1, 0].set(ylabel='Thickness [µm]', xlabel='x [µm]',
+                title='1-D Thickness (centre cut)')
+    axes[1, 0].grid()
+
+    axes[1, 1].plot(x_um, transmission_1d, color='green')
+    axes[1, 1].set(ylabel='Transmission', xlabel='x [µm]',
+                title='1-D Transmission (centre cut)')
+    axes[1, 1].grid()
+
+    axes[1, 2].plot(x_um, phase_1d, color='purple')
+    axes[1, 2].set(ylabel='Phase [rad]', xlabel='x [µm]',
+                title='1-D Phase (centre cut)')
+    axes[1, 2].grid()
+
+    # --- 1-D aperture cut (optional) -------------------------------
+    if add_aperture:
+        axes[1, 3].plot(x_um, aperture_1d, color='black')
+        axes[1, 3].set(ylabel='Aperture T', xlabel='x [µm]',
+                    title='1-D Aperture (centre cut)')
+        axes[1, 3].grid()
+
+    # ---------- optional zoom of 2-D maps --------------------------
+    lim_um = None          # set e.g. 500e-6 to zoom in
+    if lim_um is not None:
+        for ax in axes[0, :]:
+            ax.set_xlim(-lim_um * 1e6, lim_um * 1e6)
+            ax.set_ylim(-lim_um * 1e6, lim_um * 1e6)
+
+    plt.suptitle(
+        f"Custom CRL – {lens_material}, E = {E_eV:.1f} eV, λ = {wavelength_m*1e10:.2f} Å",
+        fontsize=14
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(projectdir / 'Lens_CRLCut_2D1D.png', dpi=300)
+    plt.show()
+
+    return F
+
+
+
+
+
+def zoom_window_with_interp(F: Field, zoom: float) -> Field:
+    """
+    Return a *new* LightPipes Field whose window size is ``zoom`` × the
+    original one, with the optical wavefront re-sampled so that the
+    physical beam is unchanged.
+
+    Parameters
+    ----------
+    F     : LightPipes Field
+        The input field.
+    zoom  : float
+        Scale factor for the window.  ``zoom < 1`` zooms *in* (smaller
+        window, finer sampling); ``zoom > 1`` zooms *out*.
+
+    Returns
+    -------
+    Field
+        A freshly allocated LightPipes Field (input is left untouched).
+    """
+    if zoom <= 0:
+        raise ValueError("zoom must be a positive number.")
+
+    # --- original grid ---------------------------------------------------
+    N        : int   = F.N
+    lam      : float = F.lam
+    size_old : float = F.siz
+    size_new : float = size_old * zoom          # new physical window [m]
+
+    # --- physical coordinates of the target grid ------------------------
+    x_new = np.linspace(-0.5 * size_new, 0.5 * size_new, N, endpoint=False)
+    Xn, Yn = np.meshgrid(x_new, x_new, indexing="xy")
+
+    # --- map these coordinates onto indices of the *old* grid -----------
+    dx_old   = size_old / N                      # sample pitch of old grid
+    coords_x = (Xn + 0.5 * size_old) / dx_old
+    coords_y = (Yn + 0.5 * size_old) / dx_old
+    # keep inside array bounds for cubic interpolation
+    eps = 1e-3
+    coords_x = np.clip(coords_x, 0, N - 1 - eps)
+    coords_y = np.clip(coords_y, 0, N - 1 - eps)
+
+    # --- cubic interpolation of real & imag parts -----------------------
+    real_i = map_coordinates(np.real(F.field), [coords_y, coords_x],
+                             order=3, mode="nearest")
+    imag_i = map_coordinates(np.imag(F.field), [coords_y, coords_x],
+                             order=3, mode="nearest")
+
+    # --- allocate the new LightPipes field ------------------------------
+    Fnew = Begin(size_new, lam, N, dtype=F._dtype)   # safer than raw Field()
+    Fnew.field    = real_i + 1j * imag_i
+    Fnew._IsGauss = False        # interpolated, no longer analytic Gaussian
+
+    return Fnew
+
+
+
+def apply_element(bundle: FieldBundle,
+                  el_name: str,
+                  el_dict: dict,
+                  params: dict,
+                  reg_prop_dict: dict,
+                  method: str,
+                  do_edge_damping: bool,
+                  edge_damping_aperture=None):
+    """
+    Apply *one* optical element to every field contained in *bundle*.
+    In this step we still have a single channel 'main', but we already
+    loop over bundle.fields so the code will work unchanged once we add
+    more channels.
+    """
+    # ──────────────────────────────────────────────────────────────────────
+    # 1. bookkeeping / folders / wavelength
+    # --------------------------------------------------------------------
+    projectdir  = Path(params.get("projectdir", "."))  # needed by Custom_CRL
+    def_do_plot = 1                                    # If it plots the element or not. Its = 1 by default
+    
+    #F          = bundle.fields["main"]             # Extract the field F from the field bundle
+    el_type    = el_dict["type"]
+    N          = params['N']                       # grid size
+    propsize   = params['propsize']                # current physical window
+    wavelength = params['wavelength']
+
+    #for ch_name, F in bundle.fields.items():
+    for ch_name in list(bundle.fields.keys()):
+
+        F = bundle.fields[ch_name]                # ① current field
+
         ######## REG and DEREG elements ########
+        if el_type == "zoom_window":
+            zoom = el_dict.get("zoom", 1.0)
+            F = zoom_window_with_interp(F, zoom)
+            bundle.fields[ch_name] = F
+            def_do_plot = 0
+
+        
         if el_type == 'reg':  # regularize propagation
             reg_prop_dict["regularized_propagation"] = True
             if 'reg-by-f' in el_dict:
@@ -1723,6 +2045,8 @@ def doit(params,elements):
             else:
                 tmp = reg_prop_dict["reg_parabola_focus"]
             F = Lens(F, -tmp)
+            bundle.fields[ch_name] = F
+
             def_do_plot = 0
 
         elif el_type == 'dereg':  # deregularize propagation
@@ -1732,6 +2056,7 @@ def doit(params,elements):
                 reg_prop_dict["regularized_propagation"] = False
                 tmp = reg_prop_dict["reg_parabola_focus"]
                 F = Lens(F, reg_prop_dict["reg_parabola_focus"])
+                bundle.fields[ch_name] = F
                 
             def_do_plot = 0
         
@@ -1741,7 +2066,7 @@ def doit(params,elements):
             if reg_prop_dict["reg_parabola_focus"] is None:
                 reg_prop_dict["reg_parabola_focus"] = f
                 reg_prop_dict["regularized_propagation"] = True
-                print(f"Regularizing by CRL in {F_pos} by value {f}")
+                #print(f"Regularizing by CRL in {F_pos} by value {f}")
             else:
                 #for inserting second, that images the focus made by first CRL
                 if reg_prop_dict["regularized_propagation"] == True:
@@ -1756,10 +2081,10 @@ def doit(params,elements):
                     reg_prop_dict["reg_parabola_focus"] = f
                     reg_prop_dict["regularized_propagation"] = True
                     print("Unexpected regularizing by CRL")
-                    print(f"..but still regularizing by CRL in {F_pos} by value {f}")
+                    #print(f"..but still regularizing by CRL in {F_pos} by value {f}")
 
 
-         ############# LENS ELEMENT ###############
+            ############# LENS ELEMENT ###############
         if 'lens' in el_type:
             ideal = yamlval('ideal', el_dict, 1)
             if ideal:
@@ -1768,7 +2093,7 @@ def doit(params,elements):
                     if reg_prop_dict["reg_parabola_focus"] is None:
                         reg_prop_dict["reg_parabola_focus"] = f
                         reg_prop_dict["regularized_propagation"] = True
-                        print(f"Regularizing by CRL in {F_pos} by value {f}")
+                        #print(f"Regularizing by CRL in {F_pos} by value {f}")
                     else:
                         #for inserting second, that images the focus made by first CRL
                         if reg_prop_dict["regularized_propagation"] == True:
@@ -1783,9 +2108,10 @@ def doit(params,elements):
                             reg_prop_dict["reg_parabola_focus"] = f
                             reg_prop_dict["regularized_propagation"] = True
                             print("Unexpected regularizing by CRL")
-                            print(f"..but still regularizing by CRL in {F_pos} by value {f}")
+                            #print(f"..but still regularizing by CRL in {F_pos} by value {f}")
                 else:
                     F = Lens(f,0,0,F)
+                    bundle.fields[ch_name] = F
 
             ####### APERTURE OF THE LENS ########
             aperture = yamlval('size',el_dict,0)
@@ -1794,19 +2120,21 @@ def doit(params,elements):
 
             if aperture>0: #aperture
                 ap_dict = {}
-                ap_dict['elem'] = 'Hf'
+                ap_dict['elem'] = 'Hf' 
                 ap_dict['thickness'] = 0.0001
                 ap_dict['shape'] = 'circle'
                 ap_dict['size'] = aperture
                 ap_dict['invert'] = 1
                 tmap,phasemap = doap(ap_dict,params)   # creating the transmission and phase map of the lens aperture
                 F = MultIntensity(tmap,F)              # multiplying intensity of the field by the lens aperture
+                bundle.fields[ch_name] = F
 
             ############# CRL4 default parameters ############
             if 'CRL4' in el_type: 
                 Lroc = yamlval('roc',el_dict,5.0e-5) #radius of curvature
                 ab_dict = {} #absorption dictionnary
-                ab_dict['elem'] = 'Be'
+                #ab_dict['elem'] = 'Be' # ------- TO BE CHANGED BACK -----
+                ab_dict['elem'] = yamlval('lens_material', el_dict, params.get('lens_material', 'Be'))
                 ab_dict['minr0'] = 0
                 ab_dict['shape'] = 'parabolic_lens'
                 ab_dict['size'] = aperture
@@ -1815,11 +2143,19 @@ def doit(params,elements):
                 ab_dict['num_lenses'] = yamlval('num_lenses',el_dict,1)
                 tmap2,phasemap = doap(ab_dict,params,debug=0)
                 F = MultIntensity(tmap*tmap2,F)
+                bundle.fields[ch_name] = F
 
                 if not ideal:  
                     F = MultPhase(phasemap,F)
+                    bundle.fields[ch_name] = F
                     print('doing real lens')
-                    
+
+
+                if not ideal:  
+                    F = MultPhase(phasemap,F)
+                    bundle.fields[ch_name] = F
+                    print('doing real lens')
+
             if yamlval('celestre',el_dict,1):
                 cel_dict = {}
                 cel_dict['defect'] = 'celestre'
@@ -1827,6 +2163,7 @@ def doit(params,elements):
                 cel_dict['num'] = yamlval('num_lenses',el_dict,1)
                 phaseshiftmap = do_phaseplate(cel_dict,params)
                 F = MultPhase(phaseshiftmap,F)
+                bundle.fields[ch_name] = F
                 
             if yamlval('seiboth',el_dict,1):
                 seib_dict = {}
@@ -1835,6 +2172,7 @@ def doit(params,elements):
                 seib_dict['num'] = yamlval('num_lenses',el_dict,1)
                 phaseshiftmap = do_phaseplate(seib_dict,params)
                 F = MultPhase(phaseshiftmap,F)
+                bundle.fields[ch_name] = F
                 
             if yamlval('scatterer',el_dict,0):
                 sc_dict={}
@@ -1863,182 +2201,17 @@ def doit(params,elements):
                 Ii1 = (np.nansum(Intensity(0,F)))
                 tmap3,phasemap = doap(sc_dict,params,debug=0)
                 F = MultIntensity(tmap3,F)
+                bundle.fields[ch_name] = F
                 F = MultPhase(phasemap,F)
+                bundle.fields[ch_name] = F
                 Ii2 = (np.nansum(Intensity(0,F)))
                 loss_on_scatterer = Ii2/Ii1
                 params['transmission_of_scatterer_'+el_name] = loss_on_scatterer
 
         ############# CUSTOM CRL ELEMENT ###############
         if el_type == 'Custom_CRL':
-
-            # ────────────────────────────────────────────────
-            # 1. Read geometry from YAML ---------------------
-            # ────────────────────────────────────────────────
-            ROC       = yamlval('ROC',   el_dict, None)                           # Radius of curvature of the parabolic surface          [m]
-            L         = yamlval('L',     el_dict, None)                           # Total mechanical lens thickness                       [m]
-            A         = yamlval('A',     el_dict, None)                           # Geometric aperture radius                             [m]
-            t_wall    = yamlval('twall', el_dict, None)                           # Minimal lens thickness (apex-to-apex)                 [m]
-            nb_lenses = yamlval('nb_lenses',   el_dict, None)                     # Number of lenses in the CRL stack
-            focal_lenght_stack = yamlval('focal_lenght_stack',   el_dict, None)   # Focal length of the stack                             [m]
-            add_aperture = yamlval('add_aperture',   el_dict, 0)                  # If we want to add a circular aperture around the lens [Boolean]
-
-
-            if A is None and t_wall is not None:
-                A = 2.0 * np.sqrt(ROC * (L - t_wall))              # derive aperture from wall thickness
-            elif t_wall is None and A is not None:
-                t_wall = L - (A**2) / (4.0 * ROC)                  # derive wall thickness from aperture
-            else:
-                raise ValueError("Custom_CRL: provide *either* A or twall (not both).")
-            print(ROC,L,A,t_wall)
-
-
-            # ────────────────────────────────────────────────
-            # 2. Optical constants ---------------------------
-            # ────────────────────────────────────────────────
-            E_eV         = params['photon_energy']                   # photon energy [eV]
-            wavelength_m = h * c / (E_eV * e)                        # λ = h·c / E
-
-            lens_material     = yamlval('lens_material', el_dict, 'Be')   # default material is set to Be
-            delta, beta       = get_index(lens_material, E_eV)            # from Henke tables (https://henke.lbl.gov/optical_constants/getdb2.html)
-            print(delta,beta)
-
-            phase_per_m       = -2.0 * np.pi * delta / wavelength_m       # radians of phase delay per meter
-            absorption_factor = 2.0 * np.pi * beta / wavelength_m         # absorption exponent scale
-
-            if focal_lenght_stack is None and nb_lenses is not None:
-                focal_lenght_stack = ROC / (2 * nb_lenses * delta)       # focal length calculated from the number of lenses in the stack [m]
-            elif focal_lenght_stack is not None and nb_lenses is None:
-                nb_lenses = ROC / (2 * delta * focal_lenght_stack)      # number of lenses (could be a not integer number) needed to achieve a given focal length.
-            else:
-                raise ValueError("Custom_CRL: provide *either* focal_lenght_stack or nb_lenses (not both).")
-
-
-            # ────────────────────────────────────────────────
-            # 3. Mesh & thickness map ------------------------
-            # ────────────────────────────────────────────────
-            N   = params['N']
-            Na  = (np.arange(N) -  N // 2) * params['pxsize']       # axis in meters
-            
-            xm, ym = np.meshgrid(Na, Na)                        # xm, ym in [m]
-            r = np.sqrt(xm**2 + ym**2)
-
-            print(r)
-
-            lens_half_thickness = np.full_like(r, L / 2)                # default to max thickness (outside aperture)
-            core_mask = r < A / 2 
-            print(core_mask)
-            lens_half_thickness[core_mask] = (xm[core_mask]**2 + ym[core_mask]**2) / (2 * ROC) + t_wall / 2
-            lens_thickness = 2 * lens_half_thickness
-
-            # ────────────────────────────────────────────────
-            # 4. Apply transmission and phase maps ----------
-            # ────────────────────────────────────────────────
-
-            if add_aperture == 1 : # Add an aperture around the lens
-                custom_ap = {}
-                custom_ap['elem'] = 'Hf'
-                custom_ap['thickness'] = 0.0001
-                custom_ap['shape'] = 'circle'
-                custom_ap['size'] = A
-                custom_ap['invert'] = 1
-                Aperture_transmission,phasemap = doap(custom_ap,params)   # creating the transmission and phase map of the lens aperture
-                F = MultIntensity(Aperture_transmission,F)                # multiplying intensity of the field by the lens aperture
-            
-            transmission_map = np.exp(-nb_lenses * absorption_factor * lens_thickness)         # intensity attenuation
-            phase_map        = nb_lenses * phase_per_m * lens_thickness                        # phase delay [radians]
-
-            F = MultIntensity(transmission_map, F)  # apply intensity mask
-            F = MultPhase(phase_map, F)             # apply phase shift
-
-
-            # ───────────────────────────────────────────────────────────────
-            #  Combined 2-D & 1-D plots for Custom CRL  (+ aperture) ---------
-            # ───────────────────────────────────────────────────────────────
-            extent_um = [
-                Na[0] * 1e6, Na[-1] * 1e6,
-                Na[0] * 1e6, Na[-1] * 1e6
-            ]
-
-            center_idx = N // 2
-            x_um = Na * 1e6                      # horizontal axis in µm
-
-            thickness_1d     = lens_thickness[center_idx, :] * 1e6            # [µm]
-            transmission_1d  = transmission_map[center_idx, :]
-            phase_1d         = phase_map[center_idx, :]
-
-            # ---------- NEW: include aperture 1-D profile if requested -----
-            if add_aperture:
-                aperture_1d = Aperture_transmission[center_idx, :]
-
-            # ---------- make room for an extra column ----------------------
-            ncols = 4 if add_aperture else 3
-            fig, axes = plt.subplots(2, ncols, figsize=(5.2 * ncols, 7))      # scale width
-
-            # --- 2-D thickness map -----------------------------------------
-            im0 = axes[0, 0].imshow(nb_lenses * lens_thickness * 1e6,
-                                    cmap='inferno', extent=extent_um, origin='lower')
-            axes[0, 0].set(title='2-D Thickness [µm]', xlabel='x [µm]', ylabel='y [µm]')
-            plt.colorbar(im0, ax=axes[0, 0], fraction=0.046)
-
-            # --- 2-D transmission map --------------------------------------
-            im1 = axes[0, 1].imshow(transmission_map, cmap='viridis',
-                                    extent=extent_um, origin='lower')
-            axes[0, 1].set(title='2-D Transmission', xlabel='x [µm]', ylabel='y [µm]')
-            plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
-
-            # --- 2-D phase (wrapped) ---------------------------------------
-            im2 = axes[0, 2].imshow(phase_map, cmap='twilight',
-                                    extent=extent_um, origin='lower')
-            axes[0, 2].set(title='2-D Phase [rad]', xlabel='x [µm]', ylabel='y [µm]')
-            plt.colorbar(im2, ax=axes[0, 2], fraction=0.046)
-
-            # --- 2-D aperture map (only if requested) -----------------------
-            if add_aperture:
-                im3 = axes[0, 3].imshow(Aperture_transmission, cmap='gray',
-                                        extent=extent_um, origin='lower')
-                axes[0, 3].set(title='2-D Aperture\n(transmission)',
-                            xlabel='x [µm]', ylabel='y [µm]')
-                plt.colorbar(im3, ax=axes[0, 3], fraction=0.046)
-
-            # ---------------------------------------------------------------
-            # ---------------- 1-D profiles (lower row) ---------------------
-            # ---------------------------------------------------------------
-            axes[1, 0].plot(x_um, nb_lenses * thickness_1d)
-            axes[1, 0].set(ylabel='Thickness [µm]', xlabel='x [µm]',
-                        title='1-D Thickness (centre cut)')
-            axes[1, 0].grid()
-
-            axes[1, 1].plot(x_um, transmission_1d, color='green')
-            axes[1, 1].set(ylabel='Transmission', xlabel='x [µm]',
-                        title='1-D Transmission (centre cut)')
-            axes[1, 1].grid()
-
-            axes[1, 2].plot(x_um, phase_1d, color='purple')
-            axes[1, 2].set(ylabel='Phase [rad]', xlabel='x [µm]',
-                        title='1-D Phase (centre cut)')
-            axes[1, 2].grid()
-
-            # --- 1-D aperture cut (optional) -------------------------------
-            if add_aperture:
-                axes[1, 3].plot(x_um, aperture_1d, color='black')
-                axes[1, 3].set(ylabel='Aperture T', xlabel='x [µm]',
-                            title='1-D Aperture (centre cut)')
-                axes[1, 3].grid()
-
-            # ---------- optional zoom of 2-D maps --------------------------
-            lim_um = None          # set e.g. 500e-6 to zoom in
-            if lim_um is not None:
-                for ax in axes[0, :]:
-                    ax.set_xlim(-lim_um * 1e6, lim_um * 1e6)
-                    ax.set_ylim(-lim_um * 1e6, lim_um * 1e6)
-
-            plt.suptitle(
-                f"Custom CRL – {lens_material}, E = {E_eV:.1f} eV, λ = {wavelength_m*1e10:.2f} Å",
-                fontsize=14
-            )
-            plt.tight_layout(rect=[0, 0, 1, 0.95])
-            plt.savefig(projectdir / 'Lens_CRLCut_2D1D.png', dpi=300)
-            plt.show()
+            F = handle_custom_CRL(F, el_dict, params, projectdir)
+            bundle.fields[ch_name] = F
 
 
 
@@ -2047,6 +2220,7 @@ def doit(params,elements):
         if el_type=='phaseplate':
             phaseshiftmap=do_phaseplate(el_dict,params)
             F=MultPhase(phaseshiftmap,F)
+            bundle.fields[ch_name] = F
 
         ############# ELEMENT : PURE APERTURE ###########
         if 'aperture' in el_type:
@@ -2063,15 +2237,19 @@ def doit(params,elements):
                     ph+=phasemap
                 if yamlval('do_intensity',el_dict,1):
                     F = MultIntensity(bt,F)
+                    bundle.fields[ch_name] = F
                 if yamlval('do_phaseshift',el_dict,1):
                     F = MultPhase(ph,F)
+                    bundle.fields[ch_name] = F
             else:
                 for i in np.arange(num):
                     tmap,phasemap=doap(el_dict,params)
                     if yamlval('do_intensity',el_dict,1):
                         F = MultIntensity(tmap,F)
+                        bundle.fields[ch_name] = F
                     if yamlval('do_phaseshift',el_dict,1):
                         F = MultPhase(phasemap,F)
+                        bundle.fields[ch_name] = F
 
         ############## Air Scattering ##########
         
@@ -2083,196 +2261,593 @@ def doit(params,elements):
             crop_to_odd = el_dict.get('crop_to_odd', 1)  # crops the image if N is even such that the image has an odd number of pixels (better for convolution)
             
             I_after_air = apply_air_scattering_and_debug_plot(F,
-                                                              params, 
-                                                              propsize, 
-                                                              N, 
-                                                              plot_debug = True, 
-                                                              use_symmetric_kernel = use_symmetric_kernel, compute_transmission = compute_transmission,
-                                                              test_identity_kernel = test_identity_kernel , crop_to_odd = crop_to_odd)
-           
-        ############# EDGE DAMPING ###########
-        
+                                                                params, 
+                                                                propsize, 
+                                                                N, 
+                                                                plot_debug = True, 
+                                                                use_symmetric_kernel = use_symmetric_kernel, compute_transmission = compute_transmission,
+                                                                test_identity_kernel = test_identity_kernel , crop_to_odd = crop_to_odd)
+            
+
+        # ---------------- edge damping block ----------------------------
         if do_edge_damping:
-            F = MultIntensity(edge_damping_aperture,F)
+            F = MultIntensity(edge_damping_aperture, F)
+            bundle.fields[ch_name] = F
+        # ----------------------------------------------------------------
 
-        ################## OUTPUT FIELD AT TCC #################
-        if el_name == 'TCC' and el_dict.get('VB_signal', 0):
+    ################## CREATE VB FIELDS AT TCC #################
+    if el_name == 'TCC' and el_dict.get('VB_signal', 0) and "VB_parr" not in bundle.fields:
 
-            I_cr = 4.7e19 # Critical intensity in W/cm^2
-            alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
+        I_cr = 4.7e19 # Critical intensity in W/cm^2
+        alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
 
-            # Calculate the intensity of IR laser :
-            f_IR = 0.1 # focal lenght of the final parabolla in m
-            D_IR = 0.1 # diameter of the final parabolla in m
-            P_peak = 200e12 # Peak power of the laser, in Watt
-            tau_FWHM = 30e-15 # Laser FWHM duration in second
-            wavelenght_IR = 800e-9 # Wavelenght of the IR laser, in m
-            phi_VB = np.pi / 4 #45 degrees angle between the IR and X beams.
+        # Calculate the intensity of IR laser :
+        f_IR = 0.1 # focal lenght of the final parabolla in m
+        D_IR = 0.1 # diameter of the final parabolla in m
+        wavelength_IR = 800e-9 # Wavelenght of the IR laser, in m
+        phi_VB = np.pi / 4 #45 degrees angle between the IR and X beams.
 
-            I_W_cm2, x = airy_disk_map(F.grid_size, F.N, wavelenght_IR, f_IR, D_IR, P_peak, return_grid=True)
-            
+        # Define E_pulse (OR) P_peak
+        tau_FWHM = 30e-15 # Laser FWHM duration in second
+        E_pulse  = 4.8  # Joules
+        #P_peak_direct = 200e12 # Peak power of the laser, in Watt
 
-            VB_mask_parr =(I_W_cm2/I_cr) * (c*tau_FWHM / wavelength) * (11-3*np.cos(2*phi_VB)) * (alpha_cst / 90) * (np.pi / 2)**0.5 #mask of the intensity of IR laser at TCC (unitless)
-            VB_mask_perp =(I_W_cm2/I_cr) * (c*tau_FWHM / wavelength) * (3*np.sin(2*phi_VB)) * (alpha_cst / 90) * (np.pi / 2)**0.5 #mask of the intensity of IR laser at TCC (unitless)
+        P_peak = peak_power(E=E_pulse, tau_FWHM=tau_FWHM) # In [Watt]
+        #P_peak = peak_power(P_peak=P_peak_direct)
 
-            F_VB_parr = MultIntensity(VB_mask_parr,F) # VB field in the parrallel channel, at TCC (lightpipe Field object)
-            F_VB_perp = MultIntensity(VB_mask_perp,F) # VB field in the perpendicular channel,at TCC (lightpipe Field object)
+        #I_W_cm2, x = airy_disk_map(F.grid_size, F.N, wavelenght_IR, f_IR, D_IR, P_peak, return_grid=True) #OLD=. to remove
 
-            #np.savez('XrayFieldmap_TCC.npz', F = F) #saving the complex field at TCC for later estimation of VB
-            
-        ############################ COMPUTE THE INTENSITY I FROM THE FIELD F ###################
+        # 1) ------- Option 1 = Airy Disk -------
+        #I_W_cm2, x = airy_disk_map(F.grid_size, F.N, P_peak, lam=wavelength_IR, f=f_IR, D=D_IR,return_grid=True)
 
-        do_plot = yamlval('plot',el_dict,def_do_plot)
-        plot_phase = yamlval('plot_phase',params,0)
+        # 2) ------- Option 2 = Gaussian --------
+        FWHM_diam = 1.3e-6    # target FWHM diameter [m]
+        I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam, P_peak=P_peak, return_grid=True, debug=True)
+        # ---------------------------------------
 
+        tau = tau_FWHM / np.sqrt(2*np.log(2))
+        prefactor = (c * tau / wavelength) * (alpha_cst / 90) * np.sqrt(np.pi / 2)
+        VB_mask_parr = (I_W_cm2 / I_cr) * prefactor * (11 - 3 * np.cos(2 * phi_VB))  #mask of the intensity of IR laser at TCC (unitless)
+        VB_mask_perp = (I_W_cm2 / I_cr) * prefactor * ( 3 * np.sin(2 * phi_VB)) #mask of the intensity of IR laser at TCC (unitless)
+
+        print(f"tau ={tau} s")
+        print(f"prefactor VB = {prefactor}")
+        print(f"I_W_cm2 / I_cr = {I_W_cm2 / I_cr}")
+        print(f"11 - 3 * np.cos(2 * phi_VB) = {11 - 3 * np.cos(2 * phi_VB)}")
+        print(f"3 * np.sin(2 * phi_VB) = {3 * np.sin(2 * phi_VB)}")
+
+
+
+        bundle = maybe_spawn_VB_channels(bundle,
+                                        params,
+                                        VB_mask_parr,
+                                        VB_mask_perp)
+
+    return bundle, bundle.fields["main"], def_do_plot
+# ────────────────────────────────────────────────────────────────────
+
+
+
+# ────────────────────────────────────────────────────────────────────
+def maybe_spawn_VB_channels(bundle: FieldBundle,
+                            params: dict,
+                            VB_mask_parr,
+                            VB_mask_perp):
+    """
+    At the TCC element we branch the existing field into two vacuum-
+    birefringence (VB) channels by multiplying the intensity masks.
+    Called exactly once; afterwards `propagate_bundle()` carries all
+    three channels through the beamline.
+    """
+    if "VB_parr" in bundle.fields:        # already spawned
+        return bundle
+
+    F_main = bundle.fields["main"]
+    bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
+    bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
+    return bundle
+# ────────────────────────────────────────────────────────────────────
+
+
+
+
+def doit(params,elements):
+    """
+    Simulate the beam line described by *elements* and *params*.
+
+    Parameters
+    ----------
+    params   : dict   – global run settings (see YAML template)
+    elements : list of optical elements   – [(z_pos, element name, yaml_dict), …] in *any* order
+
+    Returns
+    -------
+    params   : dict   – updated with results (transmission, intensities, …)
+    trans    : 1-D np.ndarray – I(z)/I(start) for each element plane
+    figs     : dict   – pickled images requested via `figs_to_save`
+
+    Others
+    -------
+    norms = [0,0] :  in the first passage of the loop and then norm=[integral / normalised , maximum] which gets updated at each passage in the loop.
+    im, or imC    :  image prepared by the "prepare_image" function. 
+    F             :  Electric field
+    I             :  2D map of intensity
+    measures      :  an array with the maximum and sum of the intensity map
+    """
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 0. Initialisation
+    # --------------------------------------------------------------------
+    mu.clear_times(); mu.tick()      # timing clear
+    import pprint
+    import matplotlib.cm as cm
+    from matplotlib.colors import LogNorm
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    import matplotlib.ticker as mticker
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 1. bookkeeping / folders / wavelength
+    # --------------------------------------------------------------------
+
+    pprint.pprint(params)
+
+    projectdir = Path(params.get("projectdir", "."))
+    basepath = Path(params["projectdir"]).parent
+    
+    N = params['N']
+    propsize = params['propsize']
+    params['initial_propsize'] = params['propsize']            # store the initial propsize of the simulation for the flow_plot
+    params['pxsize'] = params['propsize'] / params['N']
+    Na = ( np.arange(N) - 0.5 * N ) * params['pxsize'] / um
+    max_pixels = yamlval('subfigure_size_px',params,300)
+    if max_pixels>N: max_pixels=N
+
+    dtype = np.complex64
+
+    E_eV      = params['photon_energy']          # photon energy [eV]
+    wavelength = h * c / (E_eV * e)             # λ = h·c / E     [m]
+    params['wavelength'] = wavelength           # make it globally visible
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 2. auto-flow (inject extra imager planes) & element sorting
+    # --------------------------------------------------------------------
+    
+
+    auto_flow = yamlval('flow_auto_save',params)
+    if 'flow' in params:
+        flowdef=params['flow']
+        flowposs= None
+        if np.ndim(flowdef)==2:
+            flowposs=np.array([])
+            for r in np.arange(np.shape(flowdef)[0]):
+                ff=flowdef[r]
+                flowp1=np.arange(ff[0],ff[1],ff[2])
+                flowposs=np.concatenate((flowposs,flowp1))
+
+        if np.size(flowdef)==3:
+            flowposs=np.arange(flowdef[0],flowdef[1],flowdef[2])
+        if flowposs is not None:
+            for fi,flowpos in enumerate(flowposs):
+                fe={}
+                fe['type']='imager'
+                fe['position']=flowpos
+                fe['plot']=yamlval('flow_images',params,0)
+                fe['zoom']=yamlval('flow_zoom',params,1)
+                flowname='flow_{:.2f}'.format(flowpos)
+                flowname='flow_{:03.0f}_{:.2f}'.format(fi,flowpos)
+                EE=[flowpos,flowname,fe]
+                elements.append(EE)
+        if auto_flow:
+            ffdir = Path(params["projectdir"]) / "flow_figs" / f"{params['filename']}_auto"
+            mu.mkdir(ffdir,0)
+
+    elements = sort_elements(elements)          # sort the elements with their longitudinal position
+
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 3. initial field  & regularisation
+    # --------------------------------------------------------------------
+
+    F = Begin(params['propsize'], wavelength, N, dtype=dtype)
+    F = GaussBeam(
+            F,
+            params['beamsize'],
+            x_shift=params['gauss_x_shift'],
+            tx=params['gauss_x_tilt'])
+
+
+    reg_prop_dict = {
+        "regularized_propagation": params.get("regularized_propagation", False),
+        "reg_parabola_focus":      params.get("reg_parabola_focus_mm", None),}
+
+    bundle = FieldBundle(
+                fields={"main": F},
+                z_pos=elements[0][0],
+                reg=reg_prop_dict
+            )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 4. global stores
+    # ----------------------------------------------------------------------
+
+    figs_to_save = yamlval('figs_to_save',params,[])
+    figs_to_export = yamlval('figs_to_export',params,[])
+
+    figs = {}       # Definition of the pickle "figs"
+    export = {}
+    intensities = {}
+    integ = 0.0
+    profi = 0
+    norms = [0,0]
+    numel = len(elements)
+
+    # --- traces for post-run normalization/plotting ---
+    trace_z, trace_I, trace_names = [], [], []
+    
+    
+    if 'edge_damping' in params:
+        do_edge_damping = 1
+        edge_damping_aperture = do_edge_damping_aperture(params)
+    else:
+        do_edge_damping = 0
+    
+    
+    # ──────────────────────────────────────────────────────────────────────
+    # 5. plotting infrastructure
+    # ---------------------------------------------------------------------
+    mosaic_cbar_dynamic = True    # Whether the colorbar axis change from plot to plot in the mosaic figure.
+
+    max_panels     = params['fig_rows'] * params['fig_cols']
+    fig_by_ch      = {}
+    pi_by_ch       = {}          # current subplot number inside that figure
+    step_x, step_y = [], []
+    fig_summary    = plt.figure(figsize=(params['fig_cols'] * 3, 3))   # wide & short
+    ax_prof        = fig_summary.add_subplot(1, 2, 1)    # left panel
+    ax_steps       = fig_summary.add_subplot(1, 2, 2)    # right panel
+    profiles_done  = False                               # helper flag
+    unit_sel = params['intensity_units']                 # Intensity unit is "photons" or "relative"
+    print(f"unit read from yaml : {unit_sel}")
+    
+    
+    save_parts = yamlval('save_parts', params, 0)
+    if save_parts:
+        mu.mkdir('part')
+        mu.savefig('part/'+params['filename']+'__start')
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 5 bis. Find the active beam shape (if any)
+    # --------------------------------------------------------------------
+    beam_shaper_index = None
+    for i, E in enumerate(elements):
+        name = E[1]
+        dct  = E[2]
+        if name == "beam_shaper" and yamlval('in', dct, 1):
+            beam_shaper_index = i
+            break
+    
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 6. main loop over elements
+    # --------------------------------------------------------------------
+    method = yamlval('method',params,'FFT')
+    
+    for ei,E in enumerate(elements):      # ei = element index ([0,1,2,3...])   E = element dictionnary
+        z       = E[0]                    # position of the element
+        el_name = E[1]                    # element name
+        el_dict = E[2]                    # element aperture
+        el_type = el_dict['type']
         
-        if plot_phase:
-            I = Phase(F)
-            print(np.max(I))
-            print("plotting phase instead of intensity")
-            if 0:
-                mu.figure()
-                plt.imshow(I)
-                plt.colorbar()
-        elif 'I_after_air' in locals(): # If we activated the propagation through air
-            print("Using intensity after air scattering")
-            I = I_after_air
+        print('{:} (elem.n.{:.0f})   ###'.format(el_name,ei))
+
+        # ---- skip inactive planes ---------------------------------------
+        if 'off' in el_type: continue
+        if not yamlval('in', el_dict, 1): continue  # Skip inactive elements
+
+        # ---- propagate to element position ------------------------------
+        delta_z = z - bundle.z_pos
+
+        if delta_z == 0:
+            print('skipping zero propagation')
         else:
-            I = Intensity(0, F)
-
+            bundle = propagate_bundle(
+                        bundle,
+                        dz = delta_z,
+                        method='Fresnel' if method.lower() == 'fresnel' else 'FFT'
+                    )
+            F = bundle.fields["main"]                                                 # keep the legacy variable alive
+        
+            propsize           = F.siz                                                # update physical size of grid
+            params['propsize'] = propsize
+            params['pxsize']   = F.siz / N                                            # update pixel size
+            Na                 = (np.arange(N) - 0.5 * N) * params['pxsize'] / um     # Because the grid changes size with propagation we need to recalculate Na each time.
             
-        ####################################################################################
+            if reg_prop_dict["reg_parabola_focus"] is not None:
+                reg_prop_dict["reg_parabola_focus"] -= delta_z
+
+        # ---------- apply optical element ---------------------------------
+        bundle, F, def_do_plot = apply_element(
+                bundle,
+                el_name,
+                el_dict,
+                params,
+                reg_prop_dict,
+                method,
+                do_edge_damping,
+                edge_damping_aperture if do_edge_damping else None)
         
-        letts = ['a','b','c','d','e','f','g','h','i']
-        Iint = (np.nansum(I))*propsize**2
-        intensities[el_name] = Iint
-        logg = yamlval('figs_log',params,1)
+        all_channels = bundle.fields.items()     # [('main', F), ('VB_parr', F1) …]
 
-        ########################### CALCULATION OF THE MAXIMUM AND INTEGRAL OF THE IMAGE #############
-        #norms=[0,0] initially (1rst passage in the loop). Then, norms=[integral, sum] normalized.
+        # ---- Prepare the plot variables ------------------------------
+        ZoomFactor    = yamlval('zoom',el_dict,1)
+        do_plot       = yamlval('plot', el_dict, def_do_plot)
+        plot_phase    = yamlval('plot_phase', params, 0)
+        logg          = yamlval('figs_log', params, 1)
         
-        im,norms,measures = prepare_image(I,ps=propsize,max_pixels=max_pixels,ZoomFactor=ZoomFactor,log=logg,norms=norms,el_dict=el_dict)
+        if auto_flow and 'flow' in el_name:         # Decide once whether this element is an auto-flow plane
+            fi       = int(el_name.split('_')[1])   # e.g. flow_005_…
+            position = float(el_name.split('_')[2])
+        else:
+            fi = position = None                    # will be ignored below 
 
-        ########################### ENREGISTREMENT DU PICKLE PICKLE_FIG #############
-        if el_name.startswith(tuple(figs_to_save)):
-            print('Saving figure: {:}'.format(el_name))
-            figs[el_name] = [im,ei,propsize/ZoomFactor,z]
+        # ──────────────────────────────────────────────────────────────────────
+        # 4. Loop over channels (compute, store and plot for every active channel)
+        # ----------------------------------------------------------------------
 
-            if np.mod(ei,20)==0:
-                print('Dumping figures')
-                if np.size(figs)>0:
-                    pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
-                    mu.dumpPickle(figs, str(pkl_name))
+        for ch_name, Fch in all_channels: # Channels are : main, VB_parr, VB_perp
 
-        if auto_flow and 'flow' in el_name:
-            fi=int(el_name.split('_')[1])
-            position=float(el_name.split('_')[2])
-            flow_savefig(I,ffdir,fi,propsize,params['filename'],position)
-            plt.figure(fig)
+            # ---- decide whether to plot this channel ----
+            if ch_name == "main":
+                do_plot_ch = do_plot                    # unchanged
+            else:                                       # VB channels
+                do_plot_ch = do_plot and yamlval('plot_VB', params, 1)
 
-        if ei==0: I0int=Iint
-        trans[ei]=Iint/I0int
+            # ---- choose phase vs intensity ----
+            if yamlval('plot_phase', params, 0):
+                I_ch = Phase(Fch)
+            elif 'I_after_air' in locals() and ch_name == "main":
+                I_ch = I_after_air
+            else:
+                I_ch = Intensity(0, Fch)
+            
+            # ----- Choice of unit for intensity -----
 
-        ######################## PLOTING THE FIGURE ######################
+            if ch_name == "main" and ((beam_shaper_index is not None and ei == beam_shaper_index + 1) or (beam_shaper_index is None and ei == 0)):
+
+                photons_tot = params.get('photons_total')
+                tau         = params.get('pulse_duration')
+
+                if photons_tot:
+                    params['scale_phot'] = photons_tot / np.nansum(I_ch) / ((propsize / N)**2) # Factor to scale the map to photons/m^2. Unit is [photons / m^2]
+                    print(f"scale photons {params['scale_phot']}")
+                    print(f"∑I_ch = {np.nansum(I_ch):.3e}")
+                    print(f"∑I_ch x dx^2 = {np.nansum(I_ch)*((propsize / N)**2):.3e}")
+
+
+                if photons_tot and tau:
+                    E_J   = params['photon_energy'] * e
+                    params['scale_Wcm2'] = (photons_tot * E_J / tau) \
+                                        / np.nansum(I_ch) / propsize**2 / 1e4
+
+                    
+            # --- optional rectangular ROI integrals (for SFA labels) -------------
+            if 'roi' in el_dict and ch_name == "main":
+                s_um               = 0.5 * el_dict['roi']                 # half-width [µm]
+                mask               = np.abs(Na) <= s_um                   # Na is 1-D μm-axis
+                intensities['roi'] = (np.nansum(I_ch[np.ix_(mask, mask)])* propsize**2)
+
+            if 'roi2' in el_dict and ch_name == "main":
+                s_um                = 0.5 * el_dict['roi2']
+                mask                = np.abs(Na) <= s_um
+                intensities['roi2'] = (np.nansum(I_ch[np.ix_(mask, mask)]) * propsize**2)
+                
+            # ------ bookkeeping ---------------------------------------------------
+            Iint = np.nansum(I_ch) * propsize**2            # Summed intensity
+            intensities[f"{el_name}_{ch_name}"] = Iint      # e.g. "Det_main"
+
+            # ──────────────────────────────────────────────────────────────────────
+            # 4. Summary figure for the main field (Intensity as a function of propagation)
+            # ----------------------------------------------------------------------
+            if ch_name == "main":
+                # store raw intensity vs z; we will normalize after the loop
+                trace_z.append(z)
+                trace_I.append(Iint)
+                trace_names.append(el_name)
+
+                # left panel: transverse profile at this plane
+                prof = np.sum(I_ch, axis=0)
+                if yamlval('profiles_normalize', params, 1):
+                    prof = mu.normalize(prof)
+
+                profiles_xlim = yamlval('profiles_xlim', params, [0, 200])
+                mask          = (Na >= profiles_xlim[0]) & (Na <= profiles_xlim[1])
+                ax_prof.semilogy(Na[mask], prof[mask], color=rofl.cmap()(ei/numel))
+                profiles_done = True
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+
+            # ---- prepare image (log, zoom, …) ----
+
+            im, norms, measures = prepare_image(
+                I_ch, ps=propsize, max_pixels=max_pixels,
+                ZoomFactor=ZoomFactor, log=logg,
+                norms=norms,
+                el_dict=el_dict,
+                normalize=(unit_sel == 'relative')  # only normalize in relative mode
+            )
+
+            # --------------------------------------------------------------
+            # Always keep *every* automatic flow slice for *all* channels
+            if el_name.startswith("flow") and "flow" in figs_to_save:
+                figs[f"{el_name}_{ch_name}"] = [im, ei, propsize/ZoomFactor, z]
+            # --------------------------------------------------------------
+
+
+            # ---- auto-save figs / flow images ----
+            key = f"{el_name}_{ch_name}"
+            if el_name.startswith(tuple(figs_to_save)):
+                figs[key] = [im, ei, propsize/ZoomFactor, z]
+            if fi is not None:
+                flow_savefig(I_ch, ffdir, fi, propsize, f"{params['filename']}_{ch_name}", position)
+
+            # ---- plotting (subfigures) -------------------------------------
+            if do_plot_ch:
+
+                # 1. get or create the figure for this channel
+                if ch_name not in fig_by_ch:
+                    fig_size           = (params['fig_cols'] * 3, params['fig_rows'] * 3)
+                    fig_by_ch[ch_name] = plt.figure(figsize=fig_size)
+                    pi_by_ch[ch_name]  = 1
+                fig_ch = fig_by_ch[ch_name]
+                pi_ch  = pi_by_ch[ch_name]
+
+                # 2. open a new page if the grid is full
+                if pi_ch > max_panels:
+                    fig_by_ch[ch_name] = plt.figure(figsize=fig_size)
+                    fig_ch             = fig_by_ch[ch_name]
+                    pi_ch              = 1
+
+                # Intensity unit selection
+                if unit_sel == 'photons':
+                    scale_ph = params.get('scale_phot', 1.0)      # 1.0 if not defined yet
+                    vmin, vmax = [c * scale_ph for c in [1e-11, 50]]
+                    label_unit = "photons / m²"
+                    scale_plot = scale_ph
+                elif unit_sel == 'Wcm2':
+                    vmin, vmax = [c * params['scale_Wcm2'] for c in [1e-11, 50]]
+                    label_unit = "W cm⁻²"
+                    scale_plot = 1.0
+                else:                             # relative
+                    vmin, vmax = [1e-11, 50]
+                    label_unit = "relative"
+                    scale_plot = 1.0
+
+                # 3. ----- Draw the Mosaic --------
+                lab_ch = f"{el_name}"
+                plt.figure(fig_ch.number)             # activate this channel's fig
+                ax = plt.subplot(params['fig_rows'], params['fig_cols'], pi_ch)
+                ax.set_facecolor("black")
+
+                im_plot = im * scale_plot
+
+                # --- choose color limits ---
+                if mosaic_cbar_dynamic:
+                    # per-image dynamic limits (robust to zeros/NaN)
+                    pos = im_plot[im_plot > 0]
+                    if pos.size:
+                        vmin = float(np.nanmin(pos))
+                        vmax = float(np.nanmax(pos))
+                        if vmax <= vmin:  # edge case
+                            vmax = vmin * 1.01
+                    else:
+                        vmin, vmax = 1.0, 1.0
+                else:
+                    # fixed range (your current constants)
+                    base = [1e-11, 50]
+                    if unit_sel == 'photons':
+                        vmin, vmax = [c * scale_ph for c in base]
+                    elif unit_sel == 'Wcm2':
+                        vmin, vmax = [c * scale_plot for c in base]
+                    else:
+                        vmin, vmax = base
+
+                # --- draw ---
+                img = ax.imshow(
+                    im_plot,
+                    extent=[-propsize/2*1e6, propsize/2*1e6, -propsize/2*1e6, propsize/2*1e6],
+                    origin='lower',
+                    cmap=rofl.cmap(),
+                    norm=LogNorm(vmin=max(vmin, np.finfo(float).tiny), vmax=vmax) if logg else None
+                )
+
+                divider = make_axes_locatable(ax)
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                cbar = plt.colorbar(img, cax=cax)
+                cbar.ax.tick_params(labelsize=6)
+                cbar.set_label(label_unit, fontsize=7)
+                
+                ax.set_title(f"{lab_ch}", fontsize=9)
+                ax.set_xlabel('x  [µm]', fontsize=8)
+                ax.set_ylabel('y  [µm]', fontsize=8)
+                
+                # --------- Add the squares and Shadow factor on the Det pannel ----------
+                if ch_name == "main" and el_name == "Det":
+                    # draw the rectangles corresponding to the size of 1 camera pixel
+                    if 'roi2' in el_dict:                       # SFA-75 (green, larger box)
+                        s_um = 0.5 * el_dict['roi2']
+                        ax.add_patch(plt.Rectangle((-s_um, -s_um), 2*s_um, 2*s_um,
+                                                edgecolor='lime',  facecolor='none',
+                                                lw=1.3))
+                    if 'roi' in el_dict:                        # SFA-13 (red, smaller box)
+                        s_um = 0.5 * el_dict['roi']
+                        ax.add_patch(plt.Rectangle((-s_um, -s_um), 2*s_um, 2*s_um,
+                                                edgecolor='red',  facecolor='none',
+                                                lw=1.3))
+
+                    # text at bottom-left
+                    central_key = "TCC_main" if "TCC_main" in intensities else (
+                                "PH_main"  if "PH_main"  in intensities else "start")
+                    den    = intensities[central_key]
+                    tr_scat = yamlval("transmission_of_scatterer_L2", params, 1)
+
+                    if 'roi2' in intensities:
+                        t75 = intensities['roi2'] / den / tr_scat
+                        ax.text(0.02, 0.12, f"SF75 {t75:.1e}",
+                                transform=ax.transAxes, color='lime', fontsize=8,
+                                va='bottom', ha='left')
+
+                    if 'roi' in intensities:
+                        t13 = intensities['roi'] / den / tr_scat
+                        ax.text(0.02, 0.02, f"SF13 {t13:.1e}",
+                                transform=ax.transAxes, color='red', fontsize=8,
+                                va='bottom', ha='left')
+
+                # ----------------------------------------------------------------
+
+                pi_by_ch[ch_name] = pi_ch + 1    # Advance the panel counter for this channel
+
+        # ────────────────────────────────────────────────────────────────────
         
-        if do_plot: #plotting
-            lab=lab+', '+el_name
-            lab="({:}) ".format(ei)+lab
-
-            if np.isnan(Iint):
-                print('Something wrong here (nan integral)')
-                break
-
-            ################# SUBPLOT OF EACH ELEMENT ###############
-            plt.figure(fig)
-            ax=plt.subplot(params['fig_rows'],params['fig_cols'],pi)
-            ax.set_facecolor("black")
-            pi+=1
-            plt.title(lab)
-
-            ###################### PLOT OF THE IMAGE USING IMSHOW CUSTOMIZED FUNCTION ####################
-            imshow(im,ps=propsize,ZoomFactor=ZoomFactor,log=logg,measures=measures,el_dict=el_dict)
-            if 'roi' in el_dict:
-                s=el_dict['roi']/2
-                rect=np.array([-s,s,-s,s])
-                mu.drawRect(rect,color='r')
-                psum=propsize/um
-                rect2=np.round((rect/psum + 0.5)*N)
-                rect2=rect2.astype('int')
-                ic=mu.cutRect(rect2,I)
-                integ=np.sum(ic)*propsize**2
-                roin=integ/norms[1]
-                rp1=roin/(np.sum(I)*propsize**2/norms[1])*100
-                plt.text(.02, .09, "ROI {:.1e} ({:.0f}%)".format(roin,rp1), ha='left', va='top', transform=ax.transAxes,color=[1,0.7,0.7])
-                intensities['roi']=integ
-            if 'roi2' in el_dict:
-                s=el_dict['roi2']/2
-                rect=np.array([-s,s,-s,s])
-                mu.drawRect(rect,color='g')
-                psum=propsize/um
-                rect2=np.round((rect/psum + 0.5)*N)
-                rect2=rect2.astype('int')
-                ic=mu.cutRect(rect2,I)
-                roi2=np.sum(ic)*propsize**2
-                roi2n=roi2/norms[1]
-                rp2=roi2n/(np.sum(I)*propsize**2/norms[1])*100
-                plt.text(.02, .2, "ROI2 {:.1e} ({:.0f}%)".format(roi2n,rp2), ha='left', va='top', transform=ax.transAxes,color=[0.7,1,0.7])
-                intensities['roi2']=roi2
-
-            if el_name.startswith(tuple(figs_to_export)):
-
-                print('Exporting data for : {:}'.format(el_name))
-#                Na=np.arange(-N2,N2)*params['pxsize']/um
-                export_size=yamlval('export_size',params,300)
-                esel=np.abs(Na)<=export_size/um
-#                selI=I[esel,esel]
-                selI=I[esel,:][:,esel]
-                #cutting
-                export[el_name]=[selI,ei,z]
-                export[el_name]=[I,ei,propsize]
-                params['export_axis']=Na[esel]
-
-            if not yamlval('axes',el_dict,1):
-                plt.xticks([])
-                plt.yticks([])
-            # %%
-#            mu.figure()
- #           yt,ytl=plt.yticks()
-            #plt.yticks(np.arange(-100,110,10))
-                # %%
-        #if yamlval('ax_profiles',params) and params['ax_profiles']!=None and not auto_flow: #horizontal profiles
-        if yamlval('profiles_subfig',params,None) is not None:
-            plt.figure(fig)
-#            plt.sca(params['ax_profiles'])
-            plt.subplot(params['fig_rows'],params['fig_cols'],params['profiles_subfig'])
-            prof=np.sum(I,0)
-            lab=el_name
-            #col=mu.colors[profi]
-            col=rofl.cmap()(1.*ei/numel)
-
-            if yamlval('profiles_normalize',params,1):
-                prof=mu.normalize(prof)
-            l=plt.plot(Na,prof,label=lab,color=col)
-            #mu.text_at_plot(l,-30+profi*10,lab,fs=10,background=[1,1,1,0.6])
-            profi+=1
-            plt.title('Intensity profiles')
-            plt.ylabel('Intensity')
-            plt.xlabel('Position [μm]')
-            plt.gca().set_yscale('log')
-            plt.xlim(yamlval('profiles_xlim',params,[0,200]))
-            plt.ylim(yamlval('profiles_ylim',params,[1e-12,1e3]))
-
-
-#        mu.savefig(params['filename'])
         if save_parts:
-            mu.savefig('part/'+params['filename']+'__{:02.0f}'.format(ei))
-        if pi>=yamlval('break_at',params,10000):break
+            for ch_name, fig_ch in fig_by_ch.items():
+                fname = f"part/{params['filename']}__{ch_name}__{ei:02d}.jpg"
+                plt.figure(fig_ch.number)
+                mu.savefig(fname)
+        
         if yamlval('end_after',params,'asdfasdfasdf')==el_name: break
-    trans[-1]=integ/I0int
 
-    params['transmission']=trans
-    params['intensities']=intensities
-    params['integ']=integ
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 6 bis. Choose normalisation of intensity for summary plot
+    # ----------------------------------------------------------------------
+    if beam_shaper_index is not None:
+        norm_idx = beam_shaper_index            # intensity is evaluated *after* element
+    else:
+        norm_idx = 0
+
+    trace_z = np.asarray(trace_z, float)
+    trace_I = np.asarray(trace_I, float)
+
+    I0int = trace_I[norm_idx]
+    trans  = trace_I / I0int
+
+    # keep for later / pickling
+    params['trace_z']       = trace_z
+    params['trace_I']       = trace_I
+    params['trace_trans']   = trans
+    params['norm_index']    = int(norm_idx)
+    params['norm_ref_name'] = trace_names[norm_idx]
+    params['norm_ref_z']    = float(trace_z[norm_idx])
+
+    # make 'start' consistent with this normalization choice
+    intensities['start'] = float(I0int)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 7. stash results in params
+    # ----------------------------------------------------------------------
+    params['transmission'] =  trans
+    params['intensities']  =  intensities
+    params['integ']        =  integ
 
     if params['ax_apertures']!=None:
         plt.sca(params['ax_apertures'])
@@ -2280,8 +2855,8 @@ def doit(params,elements):
         plt.xlim(yamlval('profiles_xlim',params,[0,200]))
         plt.ylim(yamlval('apertures_ylim',params,[1e-10,2]))
 
-    duration=mu.print_times()
-    params['duration']=duration
+    duration           = mu.print_times() # secondes
+    params['duration'] = duration         # secondes
 
     if np.size(figs)>0:
         pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
@@ -2290,9 +2865,112 @@ def doit(params,elements):
         pkl_name = projectdir / "pickles" / f"{params['filename']}_figs"
         mu.dumpPickle(figs, str(pkl_name))
 
-    return params,trans,figs
 
-# those functions copied from /home/michal/hzdr/XFEL2806_spectroscopy/focus_tracing/focusing2.py
+    #------------ Save the .res pickle -----------
+    elements_dict = {el[1]: el[2] for el in elements}
+
+    res_name = projectdir / "pickles" / f"{params['filename']}_res"
+    mu.dumpPickle((elements_dict, params), str(res_name))
+    print(f"Saved RES pickle to {res_name}")
+
+    # ─── finalise the summary figure (if anything was drawn) ───
+    if profiles_done:
+        # left panel cosmetics
+        ax_prof.set_xlabel('Position [μm]')
+        ax_prof.set_ylabel('Intensity')
+        ax_prof.set_title('Intensity profiles')
+
+        # right panel – cumulative transmission normalized at norm_ref
+        ax_steps.clear()
+        ax_steps.step(params['trace_z'], params['trace_trans'], where='post', color='tab:orange')
+        ax_steps.set_xlabel('z  [m]')
+        ax_steps.set_ylabel('∑ I  /  I(ref)')
+        ax_steps.set_yscale('log')
+        ax_steps.set_title('Cumulative transmission')
+
+
+        # ----------------------------------------------------------
+        # textual annotations
+        info_lines = [f'N = {N}', f'I_ref = {I0int:.1e}', f'ref: {params["norm_ref_name"]} @ z={params["norm_ref_z"]:.2f} m']
+
+        if 'TCC_main' in intensities and 'start_main' in intensities:
+            r = intensities['TCC_main']/intensities['start_main']
+            info_lines.append(f'start→TCC = {r:.1e}')
+        
+        I_start = params['intensities']['start']
+
+        for i, txt in enumerate(info_lines):
+            ax_steps.text(0.02, 0.98 - i*0.08, txt,
+                        transform=ax_steps.transAxes,
+                        va='top', ha='left',
+                        fontsize=10,
+                        color=('black'))
+            
+        # ------ Figure Summary saving ------------------------------
+        fig_summary.tight_layout(pad=1.2)
+        plt.figure(fig_summary.number)
+        out_sum = projectdir / "figures" / f"{params['filename']}_summary.jpg"
+        mu.savefig(str(out_sum))
+
+    # ---------- Mosaic figure saving ------------------------------
+
+    for ch_name, fig_ch in fig_by_ch.items():
+        fig_ch.suptitle(f"Channel: {ch_name}, intensity unit: {unit_sel}", fontsize=14, y=0.97) # Add a title to the full figure
+        out_name = projectdir / "figures" / f"{params['filename']}_{ch_name}.jpg"
+        plt.figure(fig_ch.number)
+        mu.savefig(str(out_name))
+    # ----------------------------------------------------------------
+
+    # -----------------------------------------------------------------
+    # 8. flow-plot for every channel that may exist
+    # -----------------------------------------------------------------
+    # ─── Define horizontal range for flow plot: xl = [start, end] ───
+    beam_shaper_pos = None
+    detector_pos     = None
+
+    # Search for beam_shaper and Det positions (no 'in' check needed)
+    for z, name, dct in elements:
+        if name == "beam_shaper":
+            beam_shaper_pos = z
+        if name == "Det":
+            detector_pos = z
+
+    # Set xl if either boundary exists
+    xl = None
+    if beam_shaper_pos is not None or detector_pos is not None:
+        xl = [beam_shaper_pos if beam_shaper_pos is not None else None,
+            detector_pos     if detector_pos     is not None else None]
+        print(f"[FLOW] Setting xl = {xl} based on beam_shaper and/or detector.")
+
+    # ─── Define vertical range for flow plot: gyax ───
+    initial_propsize_m = params.get("initial_propsize", 1000)  # fallback if not set earlier
+    half_box_um = initial_propsize_m * 1e6 / 2  # Convert to µm
+    print(f"[FLOW] Using initial simulation box size = {2 * half_box_um:.1f} µm")    
+    gyax_step = 1  # resolution in µm
+    gyax_def = [-half_box_um, half_box_um, gyax_step]
+    params["flow_plot_gyax_def"] = gyax_def
+
+
+
+    for ch in ("main", "VB_parr", "VB_perp"):
+        try:
+            print(f"[DEBUG] flow_plot() for channel={ch} → gyax_def = {gyax_def}")
+
+            flow_plot(projectdir,
+                    params['filename'],
+                    vertical_type="center",
+                    channel=ch,
+                    gyax_def=gyax_def,xl=xl)
+        except AssertionError:
+            # channel wasn’t recorded – simply skip
+            pass
+    # -----------------------------------------------------------------
+
+    return params, trans, figs
+
+
+
+
 
 def CRL4_get_length(number_of_lenses,Energy):
     f=CRL_get_length(0.05,number_of_lenses,Energy)
@@ -2313,13 +2991,383 @@ def yamlval(key,ip,default=0):
         return ip[key]
 
 
-def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_type='center',log=1,xl=None,flow_figs=0,flow_plot_crange=1e-5):
+def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertical_type='center', log=1, xl=None, flow_figs=0, flow_plot_crange=1e-5, channel="main", include_flow=True, unit=None):
+    """
+    Visualizes 2D flow maps along z, with optional export for movie making.
+
+    Parameters
+    ----------
+    project_dir : str         – Path to simulation folder.
+    file        : str         – Base name of the pickle files.
+    cl          : list        – Color limits for plotting.
+    gyax_def    : list        – Vertical axis definition [start, end, step] in µm.
+    vertical_type : str       – How to reduce 2D → 1D (center, average_horiz, etc.)
+    log         : bool        – Use log scale in plot.
+    xl          : list or None – Horizontal axis limits in meters.
+    flow_figs   : bool        – If True, saves each flow slice individually.
+    flow_plot_crange : float  – Color scale fraction for flow slice plots.
+    channel     : str         – Channel to plot ("main", "VB_parr", ...).
+    include_flow : bool       – Whether to include "flow" auto-slices.
+    unit        : str or None – Intensity unit ("relative", "photons", "Wcm2").
+
+    Returns
+    -------
+    params : dict
+    res    : dict
+    fixedfall : np.ndarray – final interpolated waterfall image
+    """
+    import os
     from pathlib import Path
-    #gyax=np.arange(-50,50,1) #μm
-    #vertical_type='integral'
-    #vertical_type='vert-center'
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # ─── Load Pickles ────────────────────────────────────────────────
+
+    fn_figs = f"{file}_figs"
+    fn_res  = fn_figs.replace('figs', 'res').replace('export', 'res')
+
+    pic_path = Path(project_dir) / 'pickles' / f'{fn_figs}.pickle'
+    res_path = Path(project_dir) / 'pickles' / f'{fn_res}.pickle'
+
+    pic = mu.loadPickle(str(pic_path), strict=1)
+    res = mu.loadPickle(str(res_path))
+    partial = (res == 0)
+
+    # ─── Safety checks ───────────────────────────────────────────────
+
+    assert len(pic.keys()) > 0, 'No images found in the pickle!'
+    if not partial:
+        params = res[1]
+    else:
+        params = {}
+
+
+    # ─── Setup core variables ────────────────────────────────────────
+    first_key = sorted(pic.keys())[0]
+    picc, _, _, _ = pic[first_key]
+    N = np.shape(picc)[0]
+
+    gyax = np.arange(*gyax_def)  # y-axis in µm
+
+    numfigs = sum(1 for k in pic if k.endswith(f"_{channel}"))
+
+    assert numfigs > 0, f"No flow slices found for channel '{channel}'"
+
+    #print(f"[FLOW] Found {numfigs} flow slices for channel '{channel}'")
+
+
+    # ─── Filter relevant flow slices ────────────────────────────────
+    ffigs = []
+    figs = pic.keys()
+
+    for fig in figs:
+        if not fig.endswith(f"_{channel}"):
+            continue
+
+        if channel == "main":
+            if fig.startswith("flow"):
+                ffigs.append(fig)
+        else:
+            el_name = fig.split('_')[0]
+            wanted  = params.get("figs_to_save", [])
+            if (el_name == "flow" and include_flow) or (el_name in wanted and el_name != "flow"):
+                ffigs.append(fig)
+
+    print(f"[DEBUG] ffigs for channel '{channel}': {len(ffigs)} found")
+
+    # ─── Intensity unit handling ─────────────────────────────────────
+    unit_sel = unit or params.get('intensity_units', 'relative')
+    scale_ph  = params.get('scale_phot',  1.0)
+    scale_Wcm = params.get('scale_Wcm2', 1.0)
+
+    if unit_sel == 'photons':
+        scale = scale_ph
+        y_label = "photons / px"
+    elif unit_sel == 'Wcm2':
+        scale = scale_Wcm
+        y_label = "W cm⁻²"
+    else:
+        scale = 1.0
+        y_label = "Normalized intensity"
+
+
+    try:
+        cl = [float(c) * scale for c in cl]
+    except Exception as e:
+        raise ValueError(f"Invalid color limits (cl): {cl}. Make sure it's a list of two floats.") from e
+
+
+    # ─── Initialize arrays for waterfall plot ────────────────────────
+    numfigs = len(ffigs)
+    waterfall  = np.zeros((numfigs, N))
+    fixedfall  = np.zeros((numfigs, len(gyax)))
+    propsizes  = np.zeros((numfigs,))
+    zax        = np.zeros((numfigs,))
+
+
+    scatterer_L2_position=1e9
+    scatterer_L1_position=1e9
+    skip_existing=1
+
+    if not partial:
+    #extracting scatterers and theirloses
+        if 'L1' in res[0]:
+            scatterer_L1_position=res[0]['L1']['position']
+            scatterer_L1_loss=yamlval('transmission_of_scatterer_L1',params,1)
+        if 'L2' in res[0]:
+            scatterer_L2_position=res[0]['L2']['position']
+            scatterer_L2_loss=yamlval('transmission_of_scatterer_L2',params,1)
+        N=res[1]['subfigure_size_px']
+    else: params=[]
+    assert len(pic.keys())>0, 'There are no pictures in the pickle!'
+
+    if flow_figs:
+        ffdir = Path(project_dir) / 'flow_figs' / file
+        mu.mkdir(ffdir,0)
+
+
+    # ─── Loop over flow slices ───────────────────────────────────────
+    for fi, fig in enumerate(ffigs):
+        picc, elemi, propsize, position = pic[fig]
+        #print(f"[DEBUG] {fig} – propsize = {propsize:.3e} m")
+
+        imsize  = picc.shape[0]
+        pxsize  = propsize * 1e6 / imsize  # µm per pixel
+        half_px = imsize // 2
+        ps2     = propsize / 2             # half size in meters
+
+        # Compute horizontal axis in μm
+        xax = (np.arange(imsize) - 0.5 * imsize) * pxsize  # μm
+
+        # Compute vertical lineout based on `vertical_type`
+        if vertical_type == 'center':
+            w = 2
+            start = max(0, half_px - w)
+            end   = min(imsize, half_px + w + 1)
+            lineout = np.mean(picc[start:end, :], axis=0)
+        elif vertical_type == 'average_horiz':
+            lineout = np.mean(picc, axis=0)
+        elif vertical_type == 'vert-center':
+            lineout = picc[:, half_px]
+        elif vertical_type == 'vert-integral':
+            lineout = np.mean(picc, axis=1)
+        else:
+            raise ValueError(f"Unknown vertical_type: {vertical_type}")
+
+        # Apply scatterer correction if needed
+        if position > scatterer_L2_position:
+            lineout /= (scatterer_L2_loss * scatterer_L1_loss)
+        elif position >= scatterer_L1_position:
+            lineout /= scatterer_L1_loss
+
+        # Interpolate onto fixed gyax grid
+        interp_line = np.full(len(gyax), np.nan, dtype=np.float64)
+        valid = (gyax >= np.min(xax)) & (gyax <= np.max(xax))
+        interp_line[valid] = np.interp(gyax[valid], xax, lineout)
+        fixedfall[fi, :] = interp_line * scale
+
+
+        # Store
+        waterfall[fi, :] = lineout * scale
+        fixedfall[fi, :] = interp_line * scale
+        propsizes[fi] = propsize
+        zax[fi] = position
+
+        # ─── Optional: export movie frame if requested ───
+        if flow_figs:
+            ffdir = Path(project_dir) / 'flow_figs' / fn2
+            ffdir.mkdir(parents=True, exist_ok=True)
+
+            ff_fn = ffdir / f"fixed_{fi:04d}.jpg"
+
+            # Skip existing if flag is set
+            if skip_existing and ff_fn.exists():
+                print(f"[SKIP] Frame {fi:04d} already exists.")
+            else:
+                print(f"[MOVIE] Exporting frame {fi:04d} at z = {position:.2f} m")
+
+                # Plot the full image slice
+                fig_movie, ax_movie = plt.subplots(figsize=(10, 10))
+                npix = picc.shape[0]
+                xc = (np.arange(npix) - npix / 2) * pxsize
+                cmax = np.max(picc)
+                cl1 = [cmax * flow_plot_crange, cmax]
+
+                picc_T = picc.T  # transpose for correct orientation
+
+                mu.pcolor(picc_T, xc=xc, yc=xc, ticks=0, log=1, cl=cl1, background=[0, 0, 0])
+                plt.axis('equal')
+
+                h = 100 / 2  # box size = 100 μm
+                plt.plot([-h, -h, h, h, -h], [-h, h, h, -h, -h], 'r.', alpha=1, markersize=7)
+
+                plt.xlabel('X [μm]')
+                plt.ylabel('Y [μm]')
+                plt.title(f"{file}, z = {position * 100:.0f} cm")
+
+                # zoom into 100 μm × 100 μm box
+                plt.xlim(-h, h)
+                plt.ylim(-h, h)
+
+                plt.tight_layout()
+                plt.savefig(ff_fn)
+                plt.close(fig_movie)
+
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    mu.pcolor(
+        xc=zax,
+        yc=gyax,
+        data=fixedfall,
+        log=log,
+        ticks=None,
+        cl=cl,
+        colorbar=False
+    )
+
+    # Add colorbar with label
+    cb = plt.colorbar()
+    if vertical_type in ("average_horiz", "center"):
+        cb_label = {
+            "photons": "photons / m²",
+            "Wcm2": "W / m²",
+            "relative": "relative units"
+        }.get(unit_sel, "relative units")
+    else:
+        cb_label = y_label
+    cb.set_label(cb_label)
+
+    # Overlay propagation box profile (normalized to gyax)
+    profile = mu.normalize(propsizes) * np.max(gyax)
+    plt.plot(zax, profile, 'r-')
+
+    # Draw optical element markers
+    if not partial:
+        maxy = np.min(gyax)
+        row = 0
+        for el_name, el in res[0].items():
+            if (
+                    'position' not in el or
+                    not mu.yamlval('in', el, 1) or
+                    el_name.startswith("flow_")
+                ):
+                    continue
+            pos = el['position']
+            if len(el_name) == 2:  # short names like L1, L2
+                yline = maxy * (0.8 if 'L' in el_name else 0.72)
+                col = [1, 0.5, 0.9] if 'L' in el_name else [1, 0.9, 0.7]
+            else:
+                yline = maxy * (0.95 - row * 0.05)
+                col = 'w'
+                row = (row + 1) % 4
+
+            plt.plot([pos, pos], [maxy, yline], color=col)
+            mu.text(pos + 0.05, yline, el_name, color=col, fs=16, zorder=50, background=None)
+
+    # Detector marker (white vertical line)
+    det_pos = params.get('elements', {}).get('Det', {}).get('position', 7.0)
+    roi = 13
+    plt.plot([det_pos, det_pos], [-roi/2, roi/2], 'w-', lw=5)
+
+    # Axes labels and limits
+    plt.xlabel('Position [m]')
+    plt.ylabel('Horizontal position [μm]')
+    plt.xlim(xl if xl else [np.min(zax), np.max(zax)])
+    plt.ylim(np.min(gyax), np.max(gyax))  # ← enforce correct y-range
+    plt.title(f"{file} cut: {vertical_type}")
+
+    plt.tight_layout()
+
+
+    # ─── Total photon count near beam shaper ───
+    elements_dict = res[0]
+    beam_shaper_pos = None
+    if "beam_shaper" in elements_dict:
+        if yamlval("in", elements_dict["beam_shaper"], 1):
+            beam_shaper_pos = elements_dict["beam_shaper"]["position"]
+
+    if beam_shaper_pos is not None:
+        idx = np.argmin(np.abs(zax - beam_shaper_pos))
+        idx += 10  # margin to be clearly downstream
+
+        # Select raw image or interpolated lineout
+        if vertical_type in ("center", "vert-center"):
+            fig_key = ffigs[idx]
+            raw_img, _, propsize, _ = pic[fig_key]
+            img_N = raw_img.shape[0]
+            dx = dy = propsize / img_N
+            img_scaled = {
+                "photons": raw_img * scale_ph,
+                "Wcm2": raw_img * scale_Wcm,
+                "relative": raw_img
+            }.get(unit_sel, raw_img)
+            total_photons = np.nansum(img_scaled) * dx * dy
+        else:
+            # for 1D vertical lineouts
+            dy = (gyax[1] - gyax[0]) * 1e-6  # m
+            Lx = propsizes[idx]             # m
+            total_photons = np.nansum(fixedfall[idx]) * dy * Lx
+
+        # Print results if in photon mode
+        photons_target = params.get("photons_total", None)
+        if unit_sel == "photons":
+            print(f"\n✅ Beam shaper at z = {beam_shaper_pos:.2f} m → closest slice z = {zax[idx]:.2f} m")
+            print(f"→ Total photons from flow = {total_photons:.3e}")
+            if photons_target:
+                rel_err = (total_photons - photons_target) / photons_target
+                print(f"→ Target photons_total = {photons_target:.3e}")
+                print(f"→ Relative error = {rel_err:.2%}")
+
+    if not partial:
+        res[1]['propsizes'] = propsizes
+
+    # --------- Shadow Factors and Detector Marker -------
+    centralelement = "TCC"
+    if f"{centralelement}_{channel}" not in params.get("intensities", {}):
+        centralelement = "PH"
+    key_central = f"{centralelement}_{channel}"
+
+    intens = params.get("intensities", {})
+    if key_central in intens:
+        t1 = intens[key_central] / intens.get("start", 1.0)
+        tr_scat = yamlval("transmission_of_scatterer_L2", params, 1)
+
+        if "roi" in intens and "roi2" in intens:
+            t13 = intens["roi"] / intens[key_central] / tr_scat
+            t75 = intens["roi2"] / intens[key_central] / tr_scat
+            print(f"SFA13 = {t13:.1e}, SFA75 = {t75:.1e}, Ratio = {t75/t13:.2f}")
+
+            ax = plt.gca()
+            ax.text(0.98, 0.85, f"SFA13 = {t13:.1e}",
+                    transform=ax.transAxes, color='red', fontsize=14,
+                    ha='right', va='top',
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+            ax.text(0.98, 0.77, f"SFA75 = {t75:.1e}",
+                    transform=ax.transAxes, color='black', fontsize=14,
+                    ha='right', va='top',
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+            ax.text(0.98, 0.69, f"SFA75/SFA13 = {t75/t13:.0f}",
+                    transform=ax.transAxes, color='black', fontsize=11,
+                    ha='right', va='top',
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+
+    # ─── Save main flow plot ───
+    outdir = Path(project_dir) / "flows"
+    outdir.mkdir(parents=True, exist_ok=True)
+    outfile = outdir / f"{file}_flowplot_{channel}.jpg"
+    plt.savefig(outfile)
+    print(f"[FLOW] Saved main flow plot to {outfile}")
+
+    return params, res, fixedfall
+
+"""
+def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertical_type='center', log=1, xl=None, flow_figs=0, flow_plot_crange=1e-5, channel="main", include_flow=True, unit=None):    
+    from pathlib import Path
     cols=['g','r','k','b',[0.5,1,0.8],[1,0.3,0.8],'r']
-    mu.figure(10,6)
 
     gyax=np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
     fn=str(file)+'_figs'
@@ -2331,7 +3379,13 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
     p2 = fn.replace('figs', 'res').replace('export', 'res')
     res_path = Path(project_dir) / 'pickles' / f'{p2}.pickle'
     res = mu.loadPickle(str(res_path))
-
+    
+    #------ Choosing the intensity unit ------
+    sim_cfg   = yamlval('simulation', res[1], {})
+    unit_sel = unit or res[1].get('intensity_units', 'relative')
+    scale_ph  = res[1].get('scale_phot',  1.0)
+    scale_Wcm = res[1].get('scale_Wcm2', 1.0)
+    #----------------------
 
     partial=(res==0)
     fn2=fns[:-5]
@@ -2356,15 +3410,31 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
     picc,b,c,d=pic[akey]
     N=np.shape(picc)[0]
     figs=pic.keys()
+
     ffigs=[]
     if flow_figs:
         ffdir=project_dir+'/flow_figs/'+fn2+'/'
         mu.mkdir(ffdir,0)
+
     for fig in figs:
-        if fig[:4]=='flow':
-            ffigs.append(fig)
+        if not fig.endswith(f"_{channel}"):
+            continue
+
+        if channel == "main":            # main keeps its old behaviour
+            if fig.startswith("flow"):   # include every flow slice
+                ffigs.append(fig)
+
+        else:                            # VB channels
+            el_name = fig.split('_')[0]
+            wanted  = params.get("figs_to_save", [])
+            if (el_name == "flow" and include_flow) or (el_name in wanted and el_name != "flow"):
+                ffigs.append(fig)
+
+    print(f"[DEBUG] ffigs for channel {channel}:\n", ffigs)
+
 
     numfigs=len(ffigs)
+    assert numfigs > 0, f"No flow slices found for channel '{channel}'"
     waterfall=np.zeros((numfigs,N))
     propsizes=np.zeros((numfigs))
     fixedfall=np.zeros((numfigs,np.size(gyax)))
@@ -2372,6 +3442,7 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
     zax=np.zeros(numfigs)
     for fi,fig in enumerate(ffigs):
         picc,elemi,propsize,position=pic[fig]
+        print(f"[DEBUG] {fig} – propsize = {propsize:.3e} m")
        # tr=res[1]['transmission']
         pxsize=propsize*1e6/np.shape(picc)[0]
         imsize=np.shape(picc)[0]
@@ -2380,10 +3451,18 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
     #lineout
         ZoomFactor=1
         ps2=propsize/2/ZoomFactor
-        if vertical_type=='integral':
-            lineout=np.mean(picc,0)
-        if vertical_type=='center':
-            lineout=picc[halfsize,:]
+
+        # ---- New center averaging option ----
+        center_average_width_px = 2  # <- average over ± this many pixels around center (set by user)
+
+        halfsize = int(imsize / 2)
+        if vertical_type == 'center':
+            w = center_average_width_px
+            start = max(0, halfsize - w)
+            end = min(imsize, halfsize + w + 1)
+            lineout = np.mean(picc[start:end, :], axis=0)
+        if vertical_type == 'average_horiz':
+            lineout = np.mean(picc, axis=0)  # average across x → result has unit per m²
         if vertical_type=='vert-center':
             lineout=picc[:,halfsize]
         if vertical_type=='vert-integral':
@@ -2433,10 +3512,22 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
             lineout=lineout/scatterer_L1_loss
         waterfall[fi,:]=lineout
         zax[fi]=position
-        inteprpprof=np.interp(gyax,xax,lineout)
-        inteprpprof[gyax<np.min(xax)]=np.nan
-        inteprpprof[gyax>np.max(xax)]=np.nan
-        fixedfall[fi,:]=inteprpprof
+
+        #inteprpprof=np.interp(gyax,xax,lineout)
+        #inteprpprof[gyax<np.min(xax)]=np.nan
+        #inteprpprof[gyax>np.max(xax)]=np.nan
+
+        inteprpprof = np.full_like(gyax, np.nan)
+        # Determine indices within the xax bounds
+        valid = (gyax >= np.min(xax)) & (gyax <= np.max(xax))
+        inteprpprof[valid] = np.interp(gyax[valid], xax, lineout)
+
+
+
+        #fixedfall[fi,:]=inteprpprof #old way
+        xaxis_um = np.arange(gyax_def[0], gyax_def[1], gyax_def[2])
+        inteprpprof = np.interp(xaxis_um, xax, lineout)
+        fixedfall[fi,:] = inteprpprof
         propsizes[fi]=propsize
 
     fixedfall[fixedfall<=0]=1e-30
@@ -2460,25 +3551,55 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
         plt.ylim(-50,50)
         mu.savefig('./flows/boxflow_{:}_{:}'.format(l,vertical_type))
 
+    # ──── NEW: rescale to photons or W/cm² *once* ──────────────────
+    scale = 1.0                       # default → relative units
+    if unit_sel == 'photons':
+        scale = scale_ph              # read from the pickle header
+        y_label = "photons / px"
+    elif unit_sel == 'Wcm2':
+        scale = scale_Wcm
+        y_label = "W cm⁻²"
+    else:
+        y_label = "Normalised Intensity"
+
+    waterfall *= scale                # apply the same factor to
+    fixedfall *= scale                #   both data sets
+    cl = [float(c) * scale for c in cl]      # rescale colour-bar limits
+    #print("DEBUG flow scale =", scale, "unit =", unit_sel)
+    # ----------------------------------------------------------------
+
     ################## PLOT OF THE MAIN FLOW FIG #####################
-    mu.figure(16,9)
-    print(cl)
+    #mu.figure(16,9)
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    #print(cl)
     linearize = 0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
     if linearize:
-        #mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1,xtics_spacing=1)
         mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1) #,xtics_spacing=1
         pos=np.arange(0,np.size(zax),15)
         vals=[]
         for va in zax[pos]:
             vals.append('{:.1f}'.format(va))
         plt.xticks(pos,vals)
-        #ax.xaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.3f}"))
-        #plt.yticks(np.arange(-gyax_def[1],-gyax_def[0],50))
         plt.yticks(np.arange(0,np.size(gyax)+1,50))
+        plt.ylabel(f"Horizontal position [μm]\n({y_label})")
     else:
-        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=log,ticks=0,cl=cl)
+        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=log,ticks=None,cl=cl,colorbar=False)
+
+        # ─── Add colorbar with correct units ───
+        cb = plt.colorbar()
+        if vertical_type in ("average_horiz", "center"):
+            if unit_sel == "photons":
+                cb.set_label("photons / m²")
+            elif unit_sel == "Wcm2":
+                cb.set_label("W / m²")
+            else:
+                cb.set_label("relative units")
+        else:
+            cb.set_label(y_label)
+
+
     profile=mu.normalize(propsizes)*np.max(gyax)
-    #%% %decorations
     maxy=np.min(gyax)
     if not partial:
 
@@ -2504,40 +3625,109 @@ def flow_plot(project_dir,file,cl=[1e-11,50],gyax_def=[-1000,1000,0.1],vertical_
             if len(el_name)!=2:
                 row+=1
                 if row>3:row=0
-    # % SFA
-        centralelement='TCC'
-        if centralelement not in params['intensities']:
-            centralelement='PH'
-        infox=(np.max(zax)-np.min(zax))*0.8+np.min(zax)
-        fs=14
-        if centralelement in params['intensities']:
-            tr_scat=yamlval('transmission_of_scatterer_L2',params,1)
-            t1=params['intensities'][centralelement]/params['intensities']['start']
-            #plt.text(infox,maxy*0.5,'start->'+centralelement+' = {:.1e}'.format(t1),fontsize=12,color='w')
-            if 'roi' in params['intensities']:
-                t2=params['intensities']['roi']/params['intensities'][centralelement]/tr_scat
-                t75=params['intensities']['roi2']/params['intensities'][centralelement]/tr_scat
-                plt.text(infox,maxy*0.6,'SFA13 = {:.2e}'.format(t2),fontsize=18,color='r')                
-                mu.text(infox,maxy*0.55,'SFA75 = {:.2e}'.format(t75),fs=18,color='k')
-                
-                mu.text(infox,maxy*0.5,'SFA75/SFA13 = {:.0f}'.format(t75/t2),fs=12,color='k')
 
         plt.xlabel('Position [m]')
         plt.ylabel('Horizontal position [μm]')
-        #plt.xlim(np.min(zax),np.max(zax))
         if xl==None:
             plt.xlim(np.min(zax),np.max(zax))
         else:
             plt.xlim(xl)
         plt.plot(zax,profile,'r-')
-    roi=13
-    plt.plot([zax[-1],zax[-1]],[-roi/2,roi/2],'w-',lw=5)
-    plt.title(l2)
-    #mu.savefig('./'+project_dir+'/flows/flow_{:}_{:}'.format(l,vertical_type)) #ancienne version qui ne supportait pas la version laptop.
-    flow_path = Path(project_dir) / 'flows' / f'flow_{l}_{vertical_type}'
-    mu.savefig(str(flow_path))
-    return params,res
 
+    # -------- Ploting a small vertical white line at the location of the detector and of size = roi pixel ---------
+    roi=13
+    det_pos = params.get('elements', {}).get('Det', {}).get('position', 7.0)  # fallback to 7.0 if missing
+    plt.plot([det_pos, det_pos], [-roi/2, roi/2], 'w-', lw=5)
+    
+
+    plt.title(l2)
+
+    #print("Available keys in intensities:", params.get('intensities', {}).keys())
+    centralelement = "TCC"
+    if f"{centralelement}_{channel}" not in params["intensities"]:
+        centralelement = "PH"
+    key_central = f"{centralelement}_{channel}"
+
+
+    intens = params["intensities"]
+
+    if key_central in intens:
+        t1 = intens[key_central] / intens["start"]
+        tr_scat = yamlval("transmission_of_scatterer_L2", params, 1)
+
+        if "roi" in intens and "roi2" in intens:
+            t13 = intens["roi"] / intens[key_central] / tr_scat
+            t75 = intens["roi2"] / intens[key_central] / tr_scat
+            print(f"SFA13 = {t13:.2e}, SFA75 = {t75:.2e}, Ratio = {t75/t13:.2f}")
+            # Add text annotations using axis-relative coordinates
+            ax = plt.gca()
+
+            ax.text(0.98, 0.85, f"SFA13 = {t13:.2e}",
+                    transform=ax.transAxes, color='red', fontsize=14,
+                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+            ax.text(0.98, 0.77, f"SFA75 = {t75:.2e}",
+                    transform=ax.transAxes, color='black', fontsize=14,
+                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+            ax.text(0.98, 0.69, f"SFA75/SFA13 = {t75/t13:.0f}",
+                    transform=ax.transAxes, color='black', fontsize=11,
+                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+            
+    flow_path = Path(project_dir) / 'flows' / f'flow_{l}_{channel}_{vertical_type}'
+    plt.tight_layout()
+
+    mu.savefig(str(flow_path))
+
+    # Get beam_shaper position from the YAML
+    elements_dict = res[0]
+    beam_shaper_pos = None
+    if "beam_shaper" in elements_dict:
+        if yamlval("in", elements_dict["beam_shaper"], 1):
+            beam_shaper_pos = elements_dict["beam_shaper"]["position"]
+
+
+    if beam_shaper_pos is not None:
+        idx = np.argmin(np.abs(zax - beam_shaper_pos))
+        idx = idx + 10 # Just to be sure that we are after the beam_shaper and now before.
+        # Use full 2D field for "center" mode
+        if vertical_type in ("center", "vert-center"):
+            fig_beamshaper = ffigs[idx]
+            raw_picc, _, propsize, _ = pic[fig_beamshaper]
+            dx_m = propsize / N
+            dy_m = dx_m  # assume square pixels for now
+
+            # Apply scaling
+            if unit_sel == "photons":
+                picc_scaled = raw_picc * scale_ph
+            elif unit_sel == "Wcm2":
+                picc_scaled = raw_picc * scale_Wcm
+            else:
+                picc_scaled = raw_picc  # relative units
+
+            total_photons = np.nansum(picc_scaled) * dx_m * dy_m
+
+        else:
+            # Original computation (works only for average profiles)
+                dy_m = (gyax[1] - gyax[0]) * 1e-6
+                Lx_m = propsizes[idx]  # total horizontal width in meters
+                total_photons = np.nansum(fixedfall[idx, :]) * dy_m * Lx_m
+
+        photons_yaml = params.get("photons_total", None)
+
+        if unit_sel == "photons":
+            print(f"\n✅ Flow-slice index matching beam_shaper position {beam_shaper_pos:.2f} m (raw index n°{idx})→ closest = z = {zax[idx]:.2f} m")
+            print(f"→ Total photons from flow profile = {total_photons:.3e} (integrated over x and y)")
+
+            if photons_yaml:
+                print(f"→ Target photons_total from YAML = {photons_yaml:.3e}")
+                print(f"→ Relative error = {(total_photons - photons_yaml)/photons_yaml:.2%}")
+
+    res[1]["propsizes"] = propsizes
+
+
+    return params, res, fixedfall
+"""
 
 
 def flow_savefig(I,ffdir,fi,propsize,label,position,flow_plot_crange=1e-5):

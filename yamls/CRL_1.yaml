@@ -17,11 +17,11 @@ CustomCRL:
   ROC: 50.0e-6   # Radius of curvature in [m]
   L: 1.6e-3      # Total mechanical lens thickness [m]
   A: 400.0e-6    # Geometric aperture radius [m]
-  nb_lenses: 5. # Number of lenses
+  focal_lenght_stack: 2.0
+  #nb_lenses: 5. # Number of lenses
   lens_material: Be
   add_aperture: 1
-  #f: 10.978
-  #size: 0.002
+
 
   
 

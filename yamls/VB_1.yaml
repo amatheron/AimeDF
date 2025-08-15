@@ -11,7 +11,7 @@ beam_shaper:
   size: 0.00039
 
 O1:
-  in: 1
+  in: 0
   position: -1.142
   elem: W
   shape: realwire
@@ -123,8 +123,11 @@ beam:
   offset: 0
   size: 0.00225
   photonenergy: 8766
+  photons_total: 1.2e12          # photons in the pulse (at START plane)
+  pulse_duration: 30e-15         # Duration in [s]. Only needed for “W/cm2”
   
 simulation:
+  intensity_units: photons      # relative | photons | Wcm2
   beamdiv: 0.0001
   N_negative: 8000
   N_positive: 0

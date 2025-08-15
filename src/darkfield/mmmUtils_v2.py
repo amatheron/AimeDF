@@ -1653,6 +1653,7 @@ def labels(xs,ys,texts,xlog=1,ylog=1):
 
 """
 def pcolor(data=None,xc=None,yc=None,centers=None,log=0,ticks=1,linearize=0,cmap=None,colorbar=1,xl=None,yl=None,cl=None,decor=None,qclim=None,labels=None,label_format="m0",label_size=12,label_color='auto',xticks=None,yticks=None,background='mud',aspect='auto'):
+    import matplotlib.cm as cm
     dt=np.transpose(data)  #This transpotion is the weirdes thing ever; Basically I made this routine mainly to have this consistently transposed
     if decor is not None:
         xc=decor[0]
@@ -1715,11 +1716,14 @@ def pcolor(data=None,xc=None,yc=None,centers=None,log=0,ticks=1,linearize=0,cmap
     else:
         norm=matplotlib.colors.Normalize(vmin=cli[0],vmax=cli[1])
     if cmap is None:
+        #cmap = cm.get_cmap('gist_stern')
         cmap=rofl.cmap()
     if cmap=='nw':
         cmap=rofl.cmap_nw()
+        #cmap = cm.get_cmap('gist_stern')
     else:
         import matplotlib.cm as cm
+        #cmap = cm.get_cmap('gist_stern')
         cmap = cm.get_cmap(cmap)
     if xticks is not None:
         plt.xticks(xticks)
@@ -1745,9 +1749,11 @@ def pcolor(data=None,xc=None,yc=None,centers=None,log=0,ticks=1,linearize=0,cmap
     plt.clim(cli)
     if colorbar:
         try:
-            plt.colorbar()
+            fig = plt.gcf()
+            ax = plt.gca()
+            fig.colorbar(ax.images[0], ax=ax)  # works for imshow()
         except Exception as E:
-            print('no color bar...',E)
+            print('no color bar...', E)
     if background is not None:
         bcol=background
         if bcol=='mud':
