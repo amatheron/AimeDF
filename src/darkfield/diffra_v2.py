@@ -1653,7 +1653,7 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         lambda_IR = 800e-9 # Hardcoded here : it is just for the debug plot.
 
         # ---------- 2D zoomed image (± 3 * λ) ----------
-        r_zoom = 3.0 * float(lambda_IR)  # metres
+        #r_zoom = 3.0 * float(lambda_IR)  # metres
         x_um = x * 1e6
         extent_um = [x_um[0], x_um[-1], x_um[0], x_um[-1]]
 
@@ -1667,9 +1667,9 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         cb = plt.colorbar(im, ax=ax2d); cb.set_label("W/cm²")
 
         # Apply zoom limits, but clip to the window if the box is larger than L
-        lim = min(r_zoom, L/2) * 1e6
-        ax2d.set_xlim(-lim, +lim)
-        ax2d.set_ylim(-lim, +lim)
+        lim_um = 4.0  # µm
+        ax2d.set_xlim(-lim_um, lim_um)
+        ax2d.set_ylim(-lim_um, lim_um)
 
         # ---------- 1D lineout through the center & FWHM from data ----------
         j = N//2                                  # central column (≈ y=0)
@@ -1712,7 +1712,7 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
             transform=ax1d.transAxes, ha='left', va='top'
         )
         ax1d.grid(True)
-        ax1d.set_xlim(-lim, +lim)
+        ax1d.set_xlim(-lim_um, lim_um)
 
         fig.tight_layout()
         plt.savefig(projectdir / 'gaussian_debug.png', dpi=300)
@@ -1999,6 +1999,74 @@ def zoom_window_with_interp(F: Field, zoom: float) -> Field:
 
 
 
+def _save_center_crop_debug(I_map, params, fname_tag, title_tag):
+    """Save 2x2 debug figure (2D linear/log + central 1D linear/log) for a ±4 µm crop."""
+    from pathlib import Path
+    from matplotlib.colors import LogNorm
+
+    # scale to photons/m² (requires scale_phot to exist)
+    scale_ph = params.get("scale_phot", None)
+    if scale_ph is None:
+        print(f"[TCC] scale_phot not available → skipping {fname_tag} debug figure.")
+        return
+
+    I_ph = I_map * scale_ph  # photons / m²
+
+    # Crop to ±4 µm
+    pxsize = params["pxsize"]          # [m]/px
+    half_win_m = 4e-6                  # 4 µm
+    half_win_px = max(1, int(half_win_m / pxsize))
+
+    Ny, Nx = I_ph.shape
+    cy, cx = Ny // 2, Nx // 2
+    y0, y1 = max(0, cy - half_win_px), min(Ny, cy + half_win_px)
+    x0, x1 = max(0, cx - half_win_px), min(Nx, cx + half_win_px)
+    Iw = I_ph[y0:y1, x0:x1]
+
+    # Axes extent in µm (centered on 0)
+    ext = (-(Iw.shape[1]*pxsize)*0.5*1e6, (Iw.shape[1]*pxsize)*0.5*1e6,
+           -(Iw.shape[0]*pxsize)*0.5*1e6, (Iw.shape[0]*pxsize)*0.5*1e6)
+    x_um = np.linspace(ext[0], ext[1], Iw.shape[1])
+
+    # Central horizontal cut
+    profile = Iw[Iw.shape[0] // 2, :]
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+
+    # 2D linear
+    im0 = axes[0, 0].imshow(Iw, origin="lower", extent=ext,
+                            interpolation="nearest", aspect="equal", cmap=rofl.cmap())
+    axes[0, 0].set_title(f"{title_tag} (linear, photons/m²)")
+    axes[0, 0].set_xlabel("x [µm]"); axes[0, 0].set_ylabel("y [µm]")
+    c0 = plt.colorbar(im0, ax=axes[0, 0], shrink=0.9); c0.set_label("photons / m²")
+
+    # 2D log
+    Ipos = Iw[Iw > 0]
+    vmin = max(Ipos.min(), Iw.max()*1e-12) if Ipos.size else 1e-30
+    im1 = axes[0, 1].imshow(Iw, origin="lower", extent=ext,
+                            interpolation="nearest", aspect="equal", cmap=rofl.cmap(),
+                            norm=LogNorm(vmin=vmin, vmax=max(Iw.max(), vmin*1.01)))
+    axes[0, 1].set_title(f"{title_tag} (log, photons/m²)")
+    axes[0, 1].set_xlabel("x [µm]"); axes[0, 1].set_ylabel("y [µm]")
+    c1 = plt.colorbar(im1, ax=axes[0, 1], shrink=0.9); c1.set_label("photons / m²")
+
+    # 1D central cuts
+    axes[1, 0].plot(x_um, profile)
+    axes[1, 0].set_title("Central cut (linear)")
+    axes[1, 0].set_xlabel("x [µm]"); axes[1, 0].set_ylabel("photons / m²")
+
+    axes[1, 1].semilogy(x_um, profile)
+    axes[1, 1].set_title("Central cut (log)")
+    axes[1, 1].set_xlabel("x [µm]"); axes[1, 1].set_ylabel("photons / m²")
+
+    outpath = Path(params["projectdir"]) / f"{params['filename']}_{fname_tag}_at_TCC.png"
+    fig.savefig(outpath, dpi=300)
+    plt.close(fig)
+    print(f"[TCC] Saved {title_tag} 2D map + central cut to {outpath}")
+
+
+
+
 def apply_element(bundle: FieldBundle,
                   el_name: str,
                   el_dict: dict,
@@ -2278,7 +2346,7 @@ def apply_element(bundle: FieldBundle,
     ################## CREATE VB FIELDS AT TCC #################
     if el_name == 'TCC' and el_dict.get('VB_signal', 0) and "VB_parr" not in bundle.fields:
 
-        I_cr = 4.7e19 # Critical intensity in W/cm^2
+        I_cr = 4.7e29 # Critical intensity in [W/cm^2]
         alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
 
         # Calculate the intensity of IR laser :
@@ -2326,7 +2394,25 @@ def apply_element(bundle: FieldBundle,
     return bundle, bundle.fields["main"], def_do_plot
 # ────────────────────────────────────────────────────────────────────
 
+"""
+def _center_crop(img2d, half_win_um, pxsize_m):
+    if not (img2d.ndim == 2 and half_win_um and half_win_um > 0):
+        return img2d, None  # no crop
 
+    half_px = int((half_win_um * 1e-6) / pxsize_m)
+    if half_px < 1:
+        return img2d, None
+
+    ny, nx = img2d.shape
+    cy, cx = ny // 2, nx // 2
+    y0, y1 = max(0, cy - half_px), min(ny, cy + half_px)
+    x0, x1 = max(0, cx - half_px), min(nx, cx + half_px)
+
+    cropped = img2d[y0:y1, x0:x1]
+    # Physical window size in meters (use the actual cropped pixel count)
+    win_size_m = float(min(y1 - y0, x1 - x0)) * pxsize_m
+    return cropped, win_size_m
+"""
 
 # ────────────────────────────────────────────────────────────────────
 def maybe_spawn_VB_channels(bundle: FieldBundle,
@@ -2343,8 +2429,12 @@ def maybe_spawn_VB_channels(bundle: FieldBundle,
         return bundle
 
     F_main = bundle.fields["main"]
-    bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
-    bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
+    #bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
+    #bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
+
+    bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr**2, F_main)
+    bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp**2, F_main)
+
     return bundle
 # ────────────────────────────────────────────────────────────────────
 
@@ -2380,6 +2470,7 @@ def doit(params,elements):
     # --------------------------------------------------------------------
     mu.clear_times(); mu.tick()      # timing clear
     import pprint
+    from pathlib import Path
     import matplotlib.cm as cm
     from matplotlib.colors import LogNorm
     from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -2401,6 +2492,7 @@ def doit(params,elements):
     Na = ( np.arange(N) - 0.5 * N ) * params['pxsize'] / um
     max_pixels = yamlval('subfigure_size_px',params,300)
     if max_pixels>N: max_pixels=N
+    if max_pixels == 0: max_pixels = N                        # If we put the parameter "subfigure_size_px" = 0 in the yaml, it means that we want to take the original number of cells N 
 
     dtype = np.complex64
 
@@ -2506,8 +2598,9 @@ def doit(params,elements):
     ax_steps       = fig_summary.add_subplot(1, 2, 2)    # right panel
     profiles_done  = False                               # helper flag
     unit_sel = params['intensity_units']                 # Intensity unit is "photons" or "relative"
+    Zoom_global = params['Zoom_global']                  # Zoom global of all the outputs of the simulation
     print(f"unit read from yaml : {unit_sel}")
-    
+    print(f"Zoom global ={Zoom_global}")
     
     save_parts = yamlval('save_parts', params, 0)
     if save_parts:
@@ -2578,7 +2671,9 @@ def doit(params,elements):
         all_channels = bundle.fields.items()     # [('main', F), ('VB_parr', F1) …]
 
         # ---- Prepare the plot variables ------------------------------
-        ZoomFactor    = yamlval('zoom',el_dict,1)
+        #ZoomFactor    = yamlval('zoom',el_dict,1)
+        ZoomFactor = Zoom_global if Zoom_global != 1 else yamlval('zoom', el_dict, 1) # If Zoom Global exist, it is prioritized over the Zoom_factor (local for each plane)
+        print(f"Zoom factor = {ZoomFactor}")
         do_plot       = yamlval('plot', el_dict, def_do_plot)
         plot_phase    = yamlval('plot_phase', params, 0)
         logg          = yamlval('figs_log', params, 1)
@@ -2611,7 +2706,7 @@ def doit(params,elements):
             
             # ----- Choice of unit for intensity -----
 
-            if ch_name == "main" and ((beam_shaper_index is not None and ei == beam_shaper_index + 1) or (beam_shaper_index is None and ei == 0)):
+            if ch_name == "main" and ((beam_shaper_index is not None and ei == beam_shaper_index) or (beam_shaper_index is None and ei == 0)):
 
                 photons_tot = params.get('photons_total')
                 tau         = params.get('pulse_duration')
@@ -2662,8 +2757,19 @@ def doit(params,elements):
                 mask          = (Na >= profiles_xlim[0]) & (Na <= profiles_xlim[1])
                 ax_prof.semilogy(Na[mask], prof[mask], color=rofl.cmap()(ei/numel))
                 profiles_done = True
-            # ----------------------------------------------------------------------
+            # -----------------------------------------------------------------------
+            # --- DEBUG FIGURE @ TCC: 2D main field in photons/m² over ±4 µm (x,y) --
+            # -----------------------------------------------------------------------
 
+            # --- DEBUG FIGURES @ TCC ---
+            if el_name == "TCC":
+                if ch_name == "main":
+                    _save_center_crop_debug(I_ch, params, fname_tag="Xray",    title_tag="Main @ TCC")
+                elif ch_name == "VB_perp":
+                    _save_center_crop_debug(I_ch, params, fname_tag="VB_perp", title_tag="VB_perp @ TCC")
+
+            # ----------------------------------------------------------------------
+            # -------------------------- end DEBUG FIGURE --------------------------
             # ----------------------------------------------------------------------
 
             # ---- prepare image (log, zoom, …) ----
@@ -2752,9 +2858,10 @@ def doit(params,elements):
                         vmin, vmax = base
 
                 # --- draw ---
+                half_span_m = 0.5 * propsize / ZoomFactor   # [m]
                 img = ax.imshow(
                     im_plot,
-                    extent=[-propsize/2*1e6, propsize/2*1e6, -propsize/2*1e6, propsize/2*1e6],
+                    extent=[-half_span_m*1e6, +half_span_m*1e6,-half_span_m*1e6, +half_span_m*1e6],
                     origin='lower',
                     cmap=rofl.cmap(),
                     norm=LogNorm(vmin=max(vmin, np.finfo(float).tiny), vmax=vmax) if logg else None
@@ -3032,7 +3139,7 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
     pic = mu.loadPickle(str(pic_path), strict=1)
     res = mu.loadPickle(str(res_path))
     partial = (res == 0)
-
+    
     # ─── Safety checks ───────────────────────────────────────────────
 
     assert len(pic.keys()) > 0, 'No images found in the pickle!'
@@ -3095,7 +3202,9 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
         cl = [float(c) * scale for c in cl]
     except Exception as e:
         raise ValueError(f"Invalid color limits (cl): {cl}. Make sure it's a list of two floats.") from e
-
+    
+    # --- Id of the run ------------------------------------------------
+    run_id = file if channel in (None, "", "main") else f"{file}_{channel}"
 
     # ─── Initialize arrays for waterfall plot ────────────────────────
     numfigs = len(ffigs)
@@ -3122,8 +3231,9 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
     assert len(pic.keys())>0, 'There are no pictures in the pickle!'
 
     if flow_figs:
-        ffdir = Path(project_dir) / 'flow_figs' / file
-        mu.mkdir(ffdir,0)
+        ffdir = Path(project_dir) / 'flow_figs' / run_id
+        #mu.mkdir(ffdir,0)
+        mu.mkdir(str(ffdir), 0)
 
 
     # ─── Loop over flow slices ───────────────────────────────────────
@@ -3175,7 +3285,7 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
 
         # ─── Optional: export movie frame if requested ───
         if flow_figs:
-            ffdir = Path(project_dir) / 'flow_figs' / fn2
+            ffdir = Path(project_dir) / 'flow_figs' / run_id
             ffdir.mkdir(parents=True, exist_ok=True)
 
             ff_fn = ffdir / f"fixed_{fi:04d}.jpg"

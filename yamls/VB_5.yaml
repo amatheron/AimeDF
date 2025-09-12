@@ -60,7 +60,7 @@ simulation:
   project: Aime
   propsize: 0.002
   smooth: 0
-  subfigure_size_px: 1500
+  subfigure_size_px: 0
   version: 1
   intensity_ylim:
   - 1.0e-10
