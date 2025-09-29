@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=VB_5
+#SBATCH --job-name=VB_27
 #SBATCH --partition=hij-gpu
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
 #SBATCH --mem=600GB
-#SBATCH --output=/home/yu79deg/darkfield_p5438/bash/bash_output/VB_5.log
-#SBATCH --error=/home/yu79deg/darkfield_p5438/bash/bash_output/VB_5.err
+#SBATCH --output=/home/yu79deg/darkfield_p5438/bash/bash_output/VB_27.log
+#SBATCH --error=/home/yu79deg/darkfield_p5438/bash/bash_output/VB_27.err
 
 source ~/.bashrc  #  not automatically read by slurm
 micromamba activate darkfield  # activate here the anaconda environment you want to use
 
-python /home/yu79deg/darkfield_p5438/src/darkfield/dfdf_Aime.py -N 6000 --yaml VB_5.yaml
+python /home/yu79deg/darkfield_p5438/src/darkfield/dfdf_Aime.py -N 1000 --yaml VB_27.yaml

@@ -1621,7 +1621,7 @@ def airy_disk_map(L, N,  P_peak, lam=800e-9, f=0.10, D=0.10, return_grid=False, 
 
 def gaussian_spot_map(
 L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
-    P_peak, return_grid=False, debug=False
+    P_peak, x_offset=0.0, y_offset=0.0, return_grid=False, debug=False
 ):
     """
     2-D circular Gaussian intensity map on an LxL window, NxN samples.
@@ -1638,11 +1638,15 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
     dx = L / N
     x  = (np.arange(N) - N/2) * dx
     X, Y = np.meshgrid(x, x, indexing='ij')
-    r    = np.hypot(X, Y)
 
     if fwhm_diameter <= 0:
         raise ValueError("fwhm_diameter must be > 0.")
     w0 = fwhm_diameter / np.sqrt(2*np.log(2))  # 1/e^2 radius
+
+    # ---- shift the Gaussian center by (x_offset, y_offset) ----
+    Xs = X - float(x_offset)
+    Ys = Y - float(y_offset)
+    r  = np.hypot(Xs, Ys)
 
     # Properly normalized 2D Gaussian that integrates to 1
     G = (2.0 / (np.pi * w0**2)) * np.exp(-2.0 * (r**2) / (w0**2))
@@ -1653,7 +1657,6 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         lambda_IR = 800e-9 # Hardcoded here : it is just for the debug plot.
 
         # ---------- 2D zoomed image (± 3 * λ) ----------
-        #r_zoom = 3.0 * float(lambda_IR)  # metres
         x_um = x * 1e6
         extent_um = [x_um[0], x_um[-1], x_um[0], x_um[-1]]
 
@@ -1665,6 +1668,9 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         ax2d.set_xlabel("x [µm]"); ax2d.set_ylabel("y [µm]")
         ax2d.set_title("Gaussian: I [W/cm²]")
         cb = plt.colorbar(im, ax=ax2d); cb.set_label("W/cm²")
+
+        # Plot a cross at the requested center (x_offset,y_offset)
+        ax2d.plot([x_offset*1e6], [y_offset*1e6], 'wo', ms=5, mec='k', mew=0.8)
 
         # Apply zoom limits, but clip to the window if the box is larger than L
         lim_um = 4.0  # µm
@@ -2349,6 +2355,10 @@ def apply_element(bundle: FieldBundle,
         I_cr = 4.7e29 # Critical intensity in [W/cm^2]
         alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
 
+        # X and Y offset of the laser 
+        x_off = yamlval('laser_x_offset_m', el_dict, 0.0)    # x offset of the laser at TCC [m]
+        y_off = yamlval('laser_y_offset_m', el_dict, 0.0)    # y offset of the laser at TCC [m]
+
         # Calculate the intensity of IR laser :
         f_IR = 0.1 # focal lenght of the final parabolla in m
         D_IR = 0.1 # diameter of the final parabolla in m
@@ -2363,22 +2373,25 @@ def apply_element(bundle: FieldBundle,
         P_peak = peak_power(E=E_pulse, tau_FWHM=tau_FWHM) # In [Watt]
         #P_peak = peak_power(P_peak=P_peak_direct)
 
-        #I_W_cm2, x = airy_disk_map(F.grid_size, F.N, wavelenght_IR, f_IR, D_IR, P_peak, return_grid=True) #OLD=. to remove
-
         # 1) ------- Option 1 = Airy Disk -------
         #I_W_cm2, x = airy_disk_map(F.grid_size, F.N, P_peak, lam=wavelength_IR, f=f_IR, D=D_IR,return_grid=True)
 
         # 2) ------- Option 2 = Gaussian --------
         FWHM_diam = 1.3e-6    # target FWHM diameter [m]
-        I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam, P_peak=P_peak, return_grid=True, debug=True)
+        I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam, P_peak=P_peak, x_offset=x_off, y_offset=y_off, return_grid=True, debug=True)
         # ---------------------------------------
+        tau_Felix = tau_FWHM * np.sqrt(2 / np.log(2)) #The tau defined by Felix : tau_Felix = sqrt(2/ln(2)) * tau_FWHM
 
-        tau = tau_FWHM / np.sqrt(2*np.log(2))
-        prefactor = (c * tau / wavelength) * (alpha_cst / 90) * np.sqrt(np.pi / 2)
+        prefactor = (c * tau_Felix / wavelength) * (alpha_cst / 90) * np.sqrt(np.pi / 2)
         VB_mask_parr = (I_W_cm2 / I_cr) * prefactor * (11 - 3 * np.cos(2 * phi_VB))  #mask of the intensity of IR laser at TCC (unitless)
         VB_mask_perp = (I_W_cm2 / I_cr) * prefactor * ( 3 * np.sin(2 * phi_VB)) #mask of the intensity of IR laser at TCC (unitless)
 
-        print(f"tau ={tau} s")
+        print(f"Speed of light = {c} m/s")
+        print(f"max Intensity IR = {np.max(I_W_cm2)} W/cm^2")
+        print(f"alpha fine structure =  {alpha_cst}")
+        print(f"phi VB = {phi_VB}")
+        print(f"wavelenght x ={wavelength} m")
+        print(f"tau_Felix=tau_FWHM*sqrt(2/ln(2)) ={tau_Felix} s")
         print(f"prefactor VB = {prefactor}")
         print(f"I_W_cm2 / I_cr = {I_W_cm2 / I_cr}")
         print(f"11 - 3 * np.cos(2 * phi_VB) = {11 - 3 * np.cos(2 * phi_VB)}")
@@ -2393,26 +2406,6 @@ def apply_element(bundle: FieldBundle,
 
     return bundle, bundle.fields["main"], def_do_plot
 # ────────────────────────────────────────────────────────────────────
-
-"""
-def _center_crop(img2d, half_win_um, pxsize_m):
-    if not (img2d.ndim == 2 and half_win_um and half_win_um > 0):
-        return img2d, None  # no crop
-
-    half_px = int((half_win_um * 1e-6) / pxsize_m)
-    if half_px < 1:
-        return img2d, None
-
-    ny, nx = img2d.shape
-    cy, cx = ny // 2, nx // 2
-    y0, y1 = max(0, cy - half_px), min(ny, cy + half_px)
-    x0, x1 = max(0, cx - half_px), min(nx, cx + half_px)
-
-    cropped = img2d[y0:y1, x0:x1]
-    # Physical window size in meters (use the actual cropped pixel count)
-    win_size_m = float(min(y1 - y0, x1 - x0)) * pxsize_m
-    return cropped, win_size_m
-"""
 
 # ────────────────────────────────────────────────────────────────────
 def maybe_spawn_VB_channels(bundle: FieldBundle,
@@ -2429,11 +2422,11 @@ def maybe_spawn_VB_channels(bundle: FieldBundle,
         return bundle
 
     F_main = bundle.fields["main"]
-    #bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
-    #bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
 
     bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr**2, F_main)
     bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp**2, F_main)
+    #bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
+    #bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
 
     return bundle
 # ────────────────────────────────────────────────────────────────────
@@ -2673,10 +2666,11 @@ def doit(params,elements):
         # ---- Prepare the plot variables ------------------------------
         #ZoomFactor    = yamlval('zoom',el_dict,1)
         ZoomFactor = Zoom_global if Zoom_global != 1 else yamlval('zoom', el_dict, 1) # If Zoom Global exist, it is prioritized over the Zoom_factor (local for each plane)
-        print(f"Zoom factor = {ZoomFactor}")
         do_plot       = yamlval('plot', el_dict, def_do_plot)
         plot_phase    = yamlval('plot_phase', params, 0)
         logg          = yamlval('figs_log', params, 1)
+
+        print(f"Zoom factor = {ZoomFactor}")
         
         if auto_flow and 'flow' in el_name:         # Decide once whether this element is an auto-flow plane
             fi       = int(el_name.split('_')[1])   # e.g. flow_005_…

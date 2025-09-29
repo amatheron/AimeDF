@@ -1,0 +1,91 @@
+start:
+  position: -2.5
+  type: image
+  
+beam_shaper:
+  position: -2.002
+  type: aperture
+  shape: square
+  invert: 1
+  power: 12
+  size: 0.000200
+
+O1:
+  in: 1
+  position: -2.001
+  shape: rectangle
+  size: 0.00018
+  sizevert: 0.0006
+  type: aperture
+
+  
+CRL4a:
+  position: -2
+  type: lens
+  in: 1
+  f: 2
+  size: 0.001
+  seiboth: false
+  celestre: false
+  scatterer: false
+  
+TCC:
+  type: imager
+  position: 0
+  VB_signal: 1
+  
+Det:
+  position: 2.0
+  type: imager
+  roi: 13
+  roi2: 75
+  
+beam:
+  offset: 0
+  size: 0.002
+  photonenergy: 8766
+  photons_total: 2e11          # photons in the pulse (at START plane)
+  
+simulation:
+  intensity_units: photons   # or 'relative'
+  beamdiv: 0.0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  Zoom_global: 6 # Global zoom of all the simulation
+  smooth: 0
+  subfigure_size_px: 0
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - beam_shaper
+  - O1
+  - CRL4a
+  - TCC
+  - Det
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -2.5
+  - 2.2
+  - 0.06
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -200.0
+  - 200.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
