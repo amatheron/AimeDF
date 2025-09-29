@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="docs/VIBE_logo.png" alt="VIBE Logo" width="300"/>
+</p>
+
+
 # AimeDF — Dark-Field X-ray Propagation & Vacuum Birefringence Simulator
 
 ## What this project does
