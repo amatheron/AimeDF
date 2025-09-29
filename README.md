@@ -7,7 +7,7 @@
 
 ## What this project does
 
-AimeDF simulates the **dark-field** X-ray experiment where an XFEL probe collides with an IR pump at the **target chamber center (TCC)** to produce a **vacuum birefringence (VB)** signal. The code is **diffraction-based** and uses [LightPipes] for scalar wave propagation. It computes fields and intensities across planes from the source to the detector, including apertures, CRLs, masks, and optional air-scattering, and can now synthesize and propagate the **VB∥** and **VB⊥** channels alongside the main probe.
+VIBE simulates the **dark-field** X-ray experiment where an XFEL probe collides with an IR pump at the **target chamber center (TCC)** to produce a **vacuum birefringence (VB)** signal. The code is **diffraction-based** and uses [LightPipes] for scalar wave propagation. It computes fields and intensities across planes from the source to the detector, including apertures, CRLs, masks, and optional air-scattering, and can now synthesize and propagate the **VB∥** and **VB⊥** channels alongside the main probe.
 
 > New in recent versions
 >
@@ -44,9 +44,9 @@ params, trans, figs = VIBE.main_VIBE(params, elements)
 
 ---
 
-## Simulation workflow (what `doit` does)
+## Simulation workflow (what `main_VIBE` does)
 
-`doit(params, elements)` orchestrates the entire run:
+`main_VIBE(params, elements)` orchestrates the entire run:
 
 1. **Initialization**  
    - Creates a LightPipes field with a Gaussian source (`Begin`, `GaussBeam`) using `propsize`, `wavelength`, `N`, beam size and tilts from YAML.  
