@@ -10,4 +10,4 @@
 source ~/.bashrc  #  not automatically read by slurm
 micromamba activate darkfield  # activate here the anaconda environment you want to use
 
-python /home/yu79deg/darkfield_p5438/src/darkfield/dfdf_Aime.py -N 8000 --yaml LP_61.yaml
+python /home/yu79deg/darkfield_p5438/src/darkfield/Launch_VIBE.py -N 8000 --yaml LP_61.yaml

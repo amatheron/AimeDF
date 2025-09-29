@@ -1,3 +1,10 @@
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+#---------------- VIBE (Vacuum Induced Birefringence Explorer) code written by Aimé MATHERON and Michal Smid, Pooyan Khademi and Felix Karbstein--------------------
+#----------------------------------------- Latest updated : September 2025. All rights reserved. -------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
 from LightPipes import *
 import numpy as np
 import sys
@@ -28,6 +35,8 @@ import darkfield.regularized_propagation_v2 as rp
 from dataclasses import dataclass
 from typing import Dict   # only for type hints
 
+
+
 @dataclass
 class FieldBundle:
     """
@@ -39,12 +48,14 @@ class FieldBundle:
     z_pos: float               # current longitudinal position [m]
     reg: Dict                  # options for regularised propagation
 
+
+
 def propagate_bundle(bundle: 'FieldBundle',
                      dz: float,
                      method: str = 'FFT') -> 'FieldBundle':
     """
     Move *all* fields contained in *bundle* forward by *dz* using the same
-    rules that the monolithic `doit` loop currently applies to `F`.
+    rules that the monolithic `main_VIBE` loop currently applies to `F`.
     In this first step we still have only one field, but we already
     iterate over the dict so the function won’t need touching again when
     we add `F_VB_parr` and `F_VB_perp` later.
@@ -74,7 +85,7 @@ def propagate_bundle(bundle: 'FieldBundle',
 
     bundle.z_pos += dz
     return bundle
-# ──────────────────────────────────────────────────────────────────────
+
 
 
 
@@ -133,6 +144,7 @@ def newobject(shape='',size=0.0*mm,rot=0,smooth=0,invert=0,offset=0,thickness=0,
 
     return obj
 
+
 def newobject_from_yaml(name,ip):
     obj=newobject()
     for k in ip.keys():
@@ -145,6 +157,7 @@ def newobject_from_yaml(name,ip):
     return obj
 
 
+
 def update_object_from_yaml(obj,name,ip):
     for k in ip.keys():
         spl=k.split('_')
@@ -154,6 +167,8 @@ def update_object_from_yaml(obj,name,ip):
             val=float(val)
         obj[spl[1]]=val
     return obj
+
+
 
 def get_n(elem,E):
     #assuming 9831 eV  10μm Zn: 0.17035
@@ -301,10 +316,12 @@ def get_n(elem,E):
 
 _index_cache = {}
 
+
+
 def get_index(elem, E, table_dir=None):
     """
     Return delta and beta by interpolating the Henke data for given element and energy.
-    If table_dir is not specified, it is assumed to be next to diffra_v2.py
+    If table_dir is not specified, it is assumed to be next to VIBE.py
     """
     global _index_cache
 
@@ -315,7 +332,7 @@ def get_index(elem, E, table_dir=None):
     if elem=='W':  
         return 2.85704482E-06 , 3.86332977E-05
     
-    # Locate optical_constants folder relative to the file location of diffra_v2.py
+    # Locate optical_constants folder relative to the file location of VIBE.py
     if table_dir is None:
         table_dir = Path(__file__).parent / "optical_constants"
 
@@ -339,6 +356,8 @@ def get_index(elem, E, table_dir=None):
     delta = np.interp(E, energies, delta_vals)
     beta  = np.interp(E, energies, beta_vals)
     return beta, delta
+
+
 
 
 def thickness_to_phase_and_transmission(E_eV, delta, beta):
@@ -381,6 +400,7 @@ def thickness_to_phase_and_transmission(E_eV, delta, beta):
 
 
 
+
 def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
 
     #r=0.5
@@ -415,7 +435,9 @@ def parabolic_lens_profile(xax,r,r0,minr0=0,plot=0):
         mu.figure()
     return par2
 
-####################### ADDS THE DEFECTS FOR CRLS FROM CELESTRE AND SEIBOTH ################
+
+#---------------- ADDS THE DEFECTS FOR CRLS FROM CELESTRE AND SEIBOTH -----------------
+
 def do_phaseplate(el_dict,params,debug=0):
 
     from pathlib import Path #in order for the code to work on laptop and Cluster
@@ -515,7 +537,8 @@ def make_sphere(radius,pxsize):
         plt.imshow(circ1/um,extent=ex,cmap=rofl.cmap())
         plt.colorbar()
     return circ1
-#    sp=
+
+
 def add_sphere(radius,xr,yr,img,pxsize,positive):
     #s=np.shape(sph)[0]
     s=int(np.ceil(2*radius/pxsize))
@@ -529,11 +552,7 @@ def add_sphere(radius,xr,yr,img,pxsize,positive):
 
     orig=img[x1:x1+s,y1:y1+s]
     sph=make_sphere(radius,pxsize)
-    #new=orig+sph
     if positive:
-#        if np.mean(orig)>10*radius:
- #           new=orig+sph
-  #      else:
             new=np.power(orig**2+np.power(sph,2),0.5)
     else: #negative
         new=orig-sph
@@ -551,15 +570,11 @@ def do_edge_damping_aperture(params):
     trans=np.zeros([N,N])+1
     edge_damping_pixels=params['edge_damping']
     debug=0
-    if np.size(edge_damping_pixels)==1: #doing sine damping
-#first number is fraction of N where the damping starts
+    if np.size(edge_damping_pixels)==1: #doing sine damping #first number is fraction of N where the damping starts
         N_edge=int(N*edge_damping_pixels[0])
         x=np.arange(N_edge)/N_edge*(np.pi/2)
         y=np.sin(x)
         if edge_damping_shape=='square':
-    #        plt.plot(x,y)
-     #       plt.ylim(0,1.1)
-      #      plt.grid()
             for ri,mult in enumerate(y):
                 trans[ri,:]*=mult
                 trans[:,ri]*=mult
@@ -579,9 +594,7 @@ def do_edge_damping_aperture(params):
 
             if debug:
                 mu.figure()
- #               plt.plot(rax,prof)
                 x2=N_through+np.flip(np.arange(N_edge))
-#                plt.plot(x2,y)
                 plt.plot(rax,prof2,lw=3,alpha=0.5)
 
             N2=int(N/2)
@@ -658,11 +671,8 @@ def get_aperture_transmission_map(pars, params={}, debug=0):
         sigma = fwhm / (2 * np.sqrt(2) * (np.log(2))**(1 / (2 * P))) #wikipedia definition of Super Gaussian profile
     
         trmap = np.exp( - ( (r2 / (2 * sigma**2)) ** P ) )
-        
-
     else:
         raise ValueError(f"Unknown aperture shape: {typ}")
-
     # Invert transmission if needed
     if yamlval('invert', pars):
         trmap = 1 - trmap
@@ -778,8 +788,6 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
     #        tmp[:, yi] = np.roll(thicknessmap[:, yi], offsets_px[yi])
     #    thicknessmap = tmp*1
 
-
-
     if defect_type in ['sine', 'sawtooth', 'triangle']:
         wavelength = float(yamlval('defect_lambda', pars))
         amplitude = float(yamlval('defect_amplitude', pars))
@@ -805,6 +813,7 @@ def get_aperture_thickness_map(pars,params=[],debug=0):
         thicknessmap = tmp.copy()
 
     return thicknessmap
+
 
 
 def get_wire_like_profile(pars,params,debug):
@@ -938,7 +947,6 @@ def get_wire_like_profile(pars,params,debug):
             ss=np.abs(x)>=pars['thicksize']
             wireprof[ss]=pars['thickthickness']
 
-
     elif typ.find('par')==0:
         l=pars['l']
         halfsize=yamlval('d2',pars,0)/2
@@ -1044,9 +1052,6 @@ def get_wire_like_profile(pars,params,debug):
         assert 1, "Obstacle type not found"
     return wireprof
 
-
-
-
 '''
 shapes available:
     with realistic 2D depth profiles:
@@ -1059,6 +1064,7 @@ shapes available:
         customwire
         wire_grating
 '''
+
 
 def doap(pars,params=[],debug=0,return_thickness=0):
     axap = params['ax_apertures']
@@ -1091,11 +1097,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
             print(pars)
             boxsize=params['propsize']
             numsph=density*boxsize**2/maxsize**2 
-            #10.6.2025 --formula above was dependent on box size, which is not numerically correct
-            # I'm changing that to the size of the lens.
-            #Density example: I have a size=400μm, spheres with 20μm max. diamter, density 1
-               #  that makes 400 spheres. sounds sane.
-               #If I had k=0.02, and num_lenses=6, then that would make 48 spheres, which is quite noisy
             numsph=density*pars['size']**2/maxsize**2 
             pxsize=params['pxsize']
 
@@ -1172,8 +1173,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
 
     if  debug or 0:
         mx=N2*params['pxsize']
-#halfsize of window
-
         mu.figure()
         ax=plt.subplot(121)
         plt.title('Transmission')
@@ -1184,8 +1183,6 @@ def doap(pars,params=[],debug=0,return_thickness=0):
         plt.clim(0,1)
         prof =transmissionmap[N2,:]
         prof=mu.normalize(prof)
- #       N=params['N']
-#        #N2=int(N/2)
         Na=(np.arange(N)-N2)*params['pxsize']
         plt.plot(Na*1e6,prof*mx/um,'w')
 
@@ -1210,6 +1207,7 @@ def doap(pars,params=[],debug=0,return_thickness=0):
         return transmissionmap,phaseshiftmap,thicknessmap
     else:
         return transmissionmap,phaseshiftmap
+
 
 
 def prepare_image(img, ps=750, max_pixels=300, ZoomFactor=1, log=1,
@@ -1245,6 +1243,7 @@ def prepare_image(img, ps=750, max_pixels=300, ZoomFactor=1, log=1,
     return imgC, norms, [inte, suma]
 
 
+
 def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
     if log:
         norm=colors.LogNorm()
@@ -1255,10 +1254,7 @@ def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
 
     ps2=ps/2/um
     extent=(-ps2,ps2,-ps2,ps2)
-    #imgC=imgC/np.max(imgC)
     plt.imshow(imgC,norm=norm,cmap=rofl.cmap(),extent=extent)
-    #plt.clim(1e-3,1)
-    #plt.clim(1e-5,1)
     ax=plt.gca()
     ########### PLOT OF THE TEXT AT THE TOP LEFT : Total size of the image in um ####################
     if ps/um >=10:
@@ -1295,6 +1291,8 @@ def imshow(imgC,ps=750,ZoomFactor=1,log=1,measures=[0,0],el_dict=None):
     plt.text(.99, .89, "S {:.1e}".format(measures[1]), ha='right', va='top', transform=ax.transAxes,color='w')
     return imgC
 
+
+
 def sort_elements(ele,debug=0):
     print('sorting')
     poss=np.zeros(len(ele))
@@ -1312,6 +1310,7 @@ def sort_elements(ele,debug=0):
     return El2
 
 
+
 def croping_to_odd(image):
     """
     Crops the image in the case where N is even such that the corresponding image has an odd number of points. This is better for air scattering convolutions
@@ -1322,6 +1321,7 @@ def croping_to_odd(image):
     if cols % 2 == 0:
         image = image[:, :-1]
     return image
+
 
 
 def restore_even_shape_by_duplication(image, target_shape):
@@ -1348,6 +1348,7 @@ def restore_even_shape_by_duplication(image, target_shape):
 
     return restored
     
+
 
 def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles, Initial_energy_Geant4, N, propsize, nbins=401, smooth_sigma=4.0, plot_debug=False):
     
@@ -1406,6 +1407,9 @@ def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles,
 
     return kernel_2D, radial_hist, r_bins, radial_density , radial_density_smooth
 
+
+
+
 def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = False, use_symmetric_kernel = False, compute_transmission = False, test_identity_kernel = False , crop_to_odd = True):
 
     """
@@ -1452,16 +1456,12 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
         radial_hist = radial_density = radial_density_smooth = None
 
     ################ SANITY CHECK WITH AN IDENTITY KERNEL ##############
+    I_lp = F    
 
-    I_lp = F
-
-    
     # Step 2: Crop both kernel and image together, if needed
     if crop_to_odd:
         kernel_2D = croping_to_odd(kernel_2D)
         I_lp = croping_to_odd(I_lp)
-
-    
 
 
     if not test_identity_kernel:
@@ -1474,12 +1474,6 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     
         if compute_transmission:
             kernel_2D *= transmission_factor  # Take into account that some particles are absorbed by air
-    
-    #I_lp = Intensity(0, F)
-    
-
-    
-    
 
     I_after_air = fftconvolve(I_lp, kernel_2D, mode='same') #convolve the image with the Kernel
 
@@ -1491,7 +1485,6 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     rmask = np.sqrt((Xmask - N//2)**2 + (Ymask - N//2)**2)
     mask = rmask <= (N//2)  # or a more precise radius
     I_after_air[~mask] = 0
-
 
     if plot_debug:
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -1546,6 +1539,8 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     print(f"Air scattering + convolution took {elapsed_time/60:.2f} minutes.")
     
     return I_after_air
+
+
 
 
 
@@ -1619,22 +1614,24 @@ def airy_disk_map(L, N,  P_peak, lam=800e-9, f=0.10, D=0.10, return_grid=False, 
 
 
 
+
+
 def gaussian_spot_map(
-L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
-    P_peak, x_offset=0.0, y_offset=0.0, return_grid=False, debug=False
+    L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
+    P_peak, x_offset=0.0, y_offset=0.0,
+    return_grid=False, debug=False,
+    debug_outdir=None, sim_label=None
 ):
     """
     2-D circular Gaussian intensity map on an LxL window, NxN samples.
-    fwhm_diameter: full width at half maximum (diameter) of the spot [m].
-    Normalized to integrate to 1, then scaled by peak power. Returns W/cm^2.
-
-    Uses I(r) ∝ exp(-2 r^2 / w0^2), with w0 the 1/e^2 radius.
-    Relation: FWHM_diameter = sqrt(2 ln 2) * w0  =>  w0 = FWHM / sqrt(2 ln 2).
-    Normalized Gaussian in 2D: G(r) = (2 / (π w0^2)) * exp(-2 r^2 / w0^2).
+    Normalized to integrate to 1, then scaled by P_peak. Returns I in W/cm^2.
+    Uses I(r) ∝ exp(-2 r^2 / w0^2) with w0 = FWHM / sqrt(2 ln 2).
     """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from pathlib import Path
 
-    projectdir = Path("/home/yu79deg/darkfield_p5438/Aime")
-
+    # Grid
     dx = L / N
     x  = (np.arange(N) - N/2) * dx
     X, Y = np.meshgrid(x, x, indexing='ij')
@@ -1643,7 +1640,7 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         raise ValueError("fwhm_diameter must be > 0.")
     w0 = fwhm_diameter / np.sqrt(2*np.log(2))  # 1/e^2 radius
 
-    # ---- shift the Gaussian center by (x_offset, y_offset) ----
+    # Center shift
     Xs = X - float(x_offset)
     Ys = Y - float(y_offset)
     r  = np.hypot(Xs, Ys)
@@ -1651,49 +1648,45 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
     # Properly normalized 2D Gaussian that integrates to 1
     G = (2.0 / (np.pi * w0**2)) * np.exp(-2.0 * (r**2) / (w0**2))
 
+    # Intensity in W/cm^2
     I_W_cm2 = (P_peak * G) / 1e4
 
     if debug:
-        lambda_IR = 800e-9 # Hardcoded here : it is just for the debug plot.
-
-        # ---------- 2D zoomed image (± 3 * λ) ----------
+        # --------- Debug figure (2D + lineout) ----------
+        lambda_IR = 800e-9  # only for setting a reasonable zoom
         x_um = x * 1e6
         extent_um = [x_um[0], x_um[-1], x_um[0], x_um[-1]]
 
         fig, (ax2d, ax1d) = plt.subplots(1, 2, figsize=(10, 4.2))
-        im = ax2d.imshow(
-            I_W_cm2,
-            extent=extent_um, origin='lower'
-        )
+        im = ax2d.imshow(I_W_cm2, extent=extent_um, origin='lower')
         ax2d.set_xlabel("x [µm]"); ax2d.set_ylabel("y [µm]")
         ax2d.set_title("Gaussian: I [W/cm²]")
         cb = plt.colorbar(im, ax=ax2d); cb.set_label("W/cm²")
 
-        # Plot a cross at the requested center (x_offset,y_offset)
+        # Plot requested center
         ax2d.plot([x_offset*1e6], [y_offset*1e6], 'wo', ms=5, mec='k', mew=0.8)
 
-        # Apply zoom limits, but clip to the window if the box is larger than L
-        lim_um = 4.0  # µm
+        # Zoom window (±4 µm)
+        lim_um = 4.0
         ax2d.set_xlim(-lim_um, lim_um)
         ax2d.set_ylim(-lim_um, lim_um)
 
-        # ---------- 1D lineout through the center & FWHM from data ----------
-        j = N//2                                  # central column (≈ y=0)
+        # 1D lineout and FWHM
+        j = N//2
         x_line = x.copy()
         I_line = I_W_cm2[:, j]
         Imax   = float(I_line.max())
         half   = 0.5 * Imax
+        i0     = int(np.argmax(I_line))
 
-        # Find FWHM by linear interpolation around half-maximum on both sides
-        i0 = int(np.argmax(I_line))
-        # left crossing
+        # Left crossing
         il = np.where(I_line[:i0] < half)[0]
         if il.size:
-            k = il[-1]
+            k  = il[-1]
             xL = x_line[k] + (half - I_line[k]) * (x_line[k+1]-x_line[k]) / (I_line[k+1]-I_line[k])
         else:
             xL = x_line[0]
-        # right crossing
+        # Right crossing
         ir = np.where(I_line[i0:] < half)[0]
         if ir.size:
             k2 = i0 + ir[0] - 1
@@ -1701,7 +1694,7 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         else:
             xR = x_line[-1]
 
-        fwhm_meas = (xR - xL)         # metres; this is the *diameter*
+        fwhm_meas = (xR - xL)
         fwhm_theo = float(fwhm_diameter)
 
         ax1d.plot(x_line*1e6, I_line, lw=1.6)
@@ -1720,19 +1713,26 @@ L, N, fwhm_diameter,                # FWHM of the spot *diameter* [m]
         ax1d.grid(True)
         ax1d.set_xlim(-lim_um, lim_um)
 
+        # Title + save path
+        if sim_label:
+            fig.suptitle(f"{sim_label} — Gaussian spot debug", y=0.98)
+
+        # Where to save: VB_figures by default, unless debug_outdir is provided
+        outdir = Path(debug_outdir) if debug_outdir else Path("/home/yu79deg/darkfield_p5438/Aime/VB_figures")
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        label = sim_label or "gaussian"
         fig.tight_layout()
-        plt.savefig(projectdir / 'gaussian_debug.png', dpi=300)
-        plt.show()
+        plt.savefig(outdir / f"{label}_gaussian_debug.png", dpi=300)
+        plt.close(fig)
 
         # Console checks
-        print(f"[Gauss] ∫ G dx dy (analytic) = 1.000000")
-        print(f"[Gauss] ∫ G dx dy (numeric on window) ≈ {np.sum(G)*dx*dx:.6f}")
-        print(f"[Gauss] Peak intensity (meas): {float(I_W_cm2.max()):.3e} W/cm²")
+        print(f"[Gauss] ∫G dxdy (numeric) ≈ {np.sum(G)*dx*dx:.6f}")
+        print(f"[Gauss] Peak intensity: {float(I_W_cm2.max()):.3e} W/cm²")
         print(f"[Gauss] FWHM (meas) = {fwhm_meas*1e6:.3f} µm ; FWHM (theo) = {fwhm_theo*1e6:.3f} µm")
-        print("Saved figure: gaussian_debug.png")
+        print(f"[Gauss] Saved: {outdir / f'{label}_gaussian_debug.png'}")
 
     return (I_W_cm2, x) if return_grid else I_W_cm2
-
 
 
 
@@ -2005,54 +2005,76 @@ def zoom_window_with_interp(F: Field, zoom: float) -> Field:
 
 
 
-def _save_center_crop_debug(I_map, params, fname_tag, title_tag):
-    """Save 2x2 debug figure (2D linear/log + central 1D linear/log) for a ±4 µm crop."""
+
+
+def _save_center_crop_debug(I, params, fname_tag="debug", title_tag="", outdir=None, crop_um=4.0):
+    """
+    Save a 2x2 debug figure (2D linear/log + central 1D linear/log)
+    for a ±crop_um (µm) window around the center. Expects I to be an intensity map (relative units).
+    Scales to photons/m² if params['scale_phot'] is present.
+    """
     from pathlib import Path
+    import numpy as np
+    import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
-    # scale to photons/m² (requires scale_phot to exist)
+    # Optional scaling to photons / m²
     scale_ph = params.get("scale_phot", None)
     if scale_ph is None:
         print(f"[TCC] scale_phot not available → skipping {fname_tag} debug figure.")
         return
+    I_ph = I * scale_ph  # photons / m²
 
-    I_ph = I_map * scale_ph  # photons / m²
+    # Window half-size in pixels
+    pxsize = float(params["pxsize"])            # [m/px]
+    half_win_m  = float(crop_um) * 1e-6         # [m]
+    half_win_px = max(1, int(round(half_win_m / pxsize)))
 
-    # Crop to ±4 µm
-    pxsize = params["pxsize"]          # [m]/px
-    half_win_m = 4e-6                  # 4 µm
-    half_win_px = max(1, int(half_win_m / pxsize))
-
+    # Centered crop
     Ny, Nx = I_ph.shape
     cy, cx = Ny // 2, Nx // 2
     y0, y1 = max(0, cy - half_win_px), min(Ny, cy + half_win_px)
     x0, x1 = max(0, cx - half_win_px), min(Nx, cx + half_win_px)
     Iw = I_ph[y0:y1, x0:x1]
 
-    # Axes extent in µm (centered on 0)
-    ext = (-(Iw.shape[1]*pxsize)*0.5*1e6, (Iw.shape[1]*pxsize)*0.5*1e6,
-           -(Iw.shape[0]*pxsize)*0.5*1e6, (Iw.shape[0]*pxsize)*0.5*1e6)
+    # Axes extent in µm (centered)
+    win_x_um = Iw.shape[1] * pxsize * 1e6
+    win_y_um = Iw.shape[0] * pxsize * 1e6
+    ext = (-0.5 * win_x_um, 0.5 * win_x_um, -0.5 * win_y_um, 0.5 * win_y_um)
     x_um = np.linspace(ext[0], ext[1], Iw.shape[1])
-
-    # Central horizontal cut
     profile = Iw[Iw.shape[0] // 2, :]
 
+    # Colormap (fallback if rofl.cmap() not available)
+    try:
+        cmap = rofl.cmap()
+    except Exception:
+        cmap = None
+
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+    if title_tag:
+        fig.suptitle(title_tag, y=0.98)
 
     # 2D linear
-    im0 = axes[0, 0].imshow(Iw, origin="lower", extent=ext,
-                            interpolation="nearest", aspect="equal", cmap=rofl.cmap())
-    axes[0, 0].set_title(f"{title_tag} (linear, photons/m²)")
+    im0 = axes[0, 0].imshow(
+        Iw, origin="lower", extent=ext, interpolation="nearest",
+        aspect="equal", cmap=(cmap or "viridis")
+    )
+    axes[0, 0].set_title("2D (linear) — photons/m²")
     axes[0, 0].set_xlabel("x [µm]"); axes[0, 0].set_ylabel("y [µm]")
     c0 = plt.colorbar(im0, ax=axes[0, 0], shrink=0.9); c0.set_label("photons / m²")
 
     # 2D log
     Ipos = Iw[Iw > 0]
-    vmin = max(Ipos.min(), Iw.max()*1e-12) if Ipos.size else 1e-30
-    im1 = axes[0, 1].imshow(Iw, origin="lower", extent=ext,
-                            interpolation="nearest", aspect="equal", cmap=rofl.cmap(),
-                            norm=LogNorm(vmin=vmin, vmax=max(Iw.max(), vmin*1.01)))
-    axes[0, 1].set_title(f"{title_tag} (log, photons/m²)")
+    if Ipos.size:
+        vmin = max(np.percentile(Ipos, 0.1), Iw.max() * 1e-12)  # robust floor
+    else:
+        vmin = 1e-30
+    vmax = max(Iw.max(), vmin * 1.01)
+    im1 = axes[0, 1].imshow(
+        Iw, origin="lower", extent=ext, interpolation="nearest",
+        aspect="equal", cmap=(cmap or "viridis"), norm=LogNorm(vmin=vmin, vmax=vmax)
+    )
+    axes[0, 1].set_title("2D (log) — photons/m²")
     axes[0, 1].set_xlabel("x [µm]"); axes[0, 1].set_ylabel("y [µm]")
     c1 = plt.colorbar(im1, ax=axes[0, 1], shrink=0.9); c1.set_label("photons / m²")
 
@@ -2061,16 +2083,18 @@ def _save_center_crop_debug(I_map, params, fname_tag, title_tag):
     axes[1, 0].set_title("Central cut (linear)")
     axes[1, 0].set_xlabel("x [µm]"); axes[1, 0].set_ylabel("photons / m²")
 
-    axes[1, 1].semilogy(x_um, profile)
+    axes[1, 1].semilogy(x_um, np.clip(profile, 1e-300, None))
     axes[1, 1].set_title("Central cut (log)")
     axes[1, 1].set_xlabel("x [µm]"); axes[1, 1].set_ylabel("photons / m²")
 
-    outpath = Path(params["projectdir"]) / f"{params['filename']}_{fname_tag}_at_TCC.png"
-    fig.savefig(outpath, dpi=300)
+    # Save
+    save_dir = Path(outdir) if outdir is not None else Path(params["projectdir"])
+    sim = params.get("filename", "sim")
+    outfile = save_dir / f"{sim}_{fname_tag}_at_TCC.png"
+
+    fig.savefig(outfile, dpi=300)
     plt.close(fig)
-    print(f"[TCC] Saved {title_tag} 2D map + central cut to {outpath}")
-
-
+    print(f"[TCC] Saved {title_tag} 2D map + central cut to {outfile}")
 
 
 def apply_element(bundle: FieldBundle,
@@ -2286,9 +2310,6 @@ def apply_element(bundle: FieldBundle,
         if el_type == 'Custom_CRL':
             F = handle_custom_CRL(F, el_dict, params, projectdir)
             bundle.fields[ch_name] = F
-
-
-
             
         ############# ELEMENT : PHASE PLATE ###########
         if el_type=='phaseplate':
@@ -2378,7 +2399,20 @@ def apply_element(bundle: FieldBundle,
 
         # 2) ------- Option 2 = Gaussian --------
         FWHM_diam = 1.3e-6    # target FWHM diameter [m]
-        I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam, P_peak=P_peak, x_offset=x_off, y_offset=y_off, return_grid=True, debug=True)
+        #I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam,
+        #                            P_peak=P_peak, return_grid=True, debug=True,
+        #                            sim_label=params.get('filename'))
+    
+        I_W_cm2, x = gaussian_spot_map(
+            F.grid_size, F.N,
+            fwhm_diameter=FWHM_diam,
+            P_peak=P_peak,
+            return_grid=True,
+            debug=True,
+            debug_outdir=Path(params["projectdir"]) / "VB_figures",
+            sim_label=params.get("filename", "")
+        )
+
         # ---------------------------------------
         tau_Felix = tau_FWHM * np.sqrt(2 / np.log(2)) #The tau defined by Felix : tau_Felix = sqrt(2/ln(2)) * tau_FWHM
 
@@ -2405,9 +2439,11 @@ def apply_element(bundle: FieldBundle,
                                         VB_mask_perp)
 
     return bundle, bundle.fields["main"], def_do_plot
-# ────────────────────────────────────────────────────────────────────
 
-# ────────────────────────────────────────────────────────────────────
+
+
+
+
 def maybe_spawn_VB_channels(bundle: FieldBundle,
                             params: dict,
                             VB_mask_parr,
@@ -2425,16 +2461,15 @@ def maybe_spawn_VB_channels(bundle: FieldBundle,
 
     bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr**2, F_main)
     bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp**2, F_main)
-    #bundle.fields["VB_parr"] = MultIntensity(VB_mask_parr, F_main)
-    #bundle.fields["VB_perp"] = MultIntensity(VB_mask_perp, F_main)
 
     return bundle
-# ────────────────────────────────────────────────────────────────────
 
 
 
 
-def doit(params,elements):
+
+
+def main_VIBE(params,elements):
     """
     Simulate the beam line described by *elements* and *params*.
 
@@ -2756,11 +2791,25 @@ def doit(params,elements):
             # -----------------------------------------------------------------------
 
             # --- DEBUG FIGURES @ TCC ---
-            if el_name == "TCC":
-                if ch_name == "main":
-                    _save_center_crop_debug(I_ch, params, fname_tag="Xray",    title_tag="Main @ TCC")
-                elif ch_name == "VB_perp":
-                    _save_center_crop_debug(I_ch, params, fname_tag="VB_perp", title_tag="VB_perp @ TCC")
+            #if el_name == "TCC":
+            #    if ch_name == "main":
+            #        _save_center_crop_debug(I_ch, params, fname_tag="Xray",    title_tag="Main @ TCC")
+            #    elif ch_name == "VB_perp":
+            #        _save_center_crop_debug(I_ch, params, fname_tag="VB_perp", title_tag="VB_perp @ TCC")
+
+            # --- DEBUG FIGURES @ TCC (only Xray & VB_perp to VB_figures) ---
+            if el_name == "TCC" and ch_name in ("main", "VB_perp"):
+                vb_dir = Path(params["projectdir"]) / "VB_figures"
+                sim    = params.get("filename", "")
+                tag    = "Xray" if ch_name == "main" else "VB_perp"
+                title  = "Main @ TCC" if ch_name == "main" else "VB_perp @ TCC"
+                _save_center_crop_debug(
+                    I_ch, params,
+                    fname_tag=tag,
+                    title_tag=f"{sim} — {title}",
+                    outdir=vb_dir,
+                )
+
 
             # ----------------------------------------------------------------------
             # -------------------------- end DEBUG FIGURE --------------------------
@@ -3072,10 +3121,11 @@ def doit(params,elements):
 
 
 
-
 def CRL4_get_length(number_of_lenses,Energy):
     f=CRL_get_length(0.05,number_of_lenses,Energy)
     return f
+
+
 
 def CRL_get_length(radius_mm,number,Energy):
     dn=340/Energy**2
@@ -3085,11 +3135,14 @@ def CRL_get_length(radius_mm,number,Energy):
     return f_calc #focal length [m]
 
 
+
 def yamlval(key,ip,default=0):
     if not key in ip.keys() :
         return default
     else:
         return ip[key]
+
+
 
 
 def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertical_type='center', log=1, xl=None, flow_figs=0, flow_plot_crange=1e-5, channel="main", include_flow=True, unit=None):
@@ -3207,7 +3260,6 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
     propsizes  = np.zeros((numfigs,))
     zax        = np.zeros((numfigs,))
 
-
     scatterer_L2_position=1e9
     scatterer_L1_position=1e9
     skip_existing=1
@@ -3317,7 +3369,6 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
                 plt.savefig(ff_fn)
                 plt.close(fig_movie)
 
-
     fig, ax = plt.subplots(figsize=(14, 8))
 
     mu.pcolor(
@@ -3382,7 +3433,6 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
     plt.title(f"{file} cut: {vertical_type}")
 
     plt.tight_layout()
-
 
     # ─── Total photon count near beam shaper ───
     elements_dict = res[0]
@@ -3468,370 +3518,8 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
 
     return params, res, fixedfall
 
-"""
-def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertical_type='center', log=1, xl=None, flow_figs=0, flow_plot_crange=1e-5, channel="main", include_flow=True, unit=None):    
-    from pathlib import Path
-    cols=['g','r','k','b',[0.5,1,0.8],[1,0.3,0.8],'r']
-
-    gyax=np.arange(gyax_def[0],gyax_def[1],gyax_def[2]) #μm
-    fn=str(file)+'_figs'
-    fns=fn
-
-    pic_path = Path(project_dir) / 'pickles' / f'{fn}.pickle'
-    pic = mu.loadPickle(str(pic_path), strict=1)
-
-    p2 = fn.replace('figs', 'res').replace('export', 'res')
-    res_path = Path(project_dir) / 'pickles' / f'{p2}.pickle'
-    res = mu.loadPickle(str(res_path))
-    
-    #------ Choosing the intensity unit ------
-    sim_cfg   = yamlval('simulation', res[1], {})
-    unit_sel = unit or res[1].get('intensity_units', 'relative')
-    scale_ph  = res[1].get('scale_phot',  1.0)
-    scale_Wcm = res[1].get('scale_Wcm2', 1.0)
-    #----------------------
-
-    partial=(res==0)
-    fn2=fns[:-5]
-    l=fn2
-    scatterer_L2_position=1e9
-    scatterer_L1_position=1e9
-    skip_existing=1
-    if not partial:
-        params=res[1]
-    #extracting scatterers and theirloses
-        if 'L1' in res[0]:
-            scatterer_L1_position=res[0]['L1']['position']
-            scatterer_L1_loss=yamlval('transmission_of_scatterer_L1',params,1)
-        if 'L2' in res[0]:
-            scatterer_L2_position=res[0]['L2']['position']
-            scatterer_L2_loss=yamlval('transmission_of_scatterer_L2',params,1)
-        N=res[1]['subfigure_size_px']
-    else: params=[]
-    assert len(pic.keys())>0, 'There are no pictures in the pickle!'
-
-    akey=sorted(pic.keys())[0]
-    picc,b,c,d=pic[akey]
-    N=np.shape(picc)[0]
-    figs=pic.keys()
-
-    ffigs=[]
-    if flow_figs:
-        ffdir=project_dir+'/flow_figs/'+fn2+'/'
-        mu.mkdir(ffdir,0)
-
-    for fig in figs:
-        if not fig.endswith(f"_{channel}"):
-            continue
-
-        if channel == "main":            # main keeps its old behaviour
-            if fig.startswith("flow"):   # include every flow slice
-                ffigs.append(fig)
-
-        else:                            # VB channels
-            el_name = fig.split('_')[0]
-            wanted  = params.get("figs_to_save", [])
-            if (el_name == "flow" and include_flow) or (el_name in wanted and el_name != "flow"):
-                ffigs.append(fig)
-
-    print(f"[DEBUG] ffigs for channel {channel}:\n", ffigs)
 
 
-    numfigs=len(ffigs)
-    assert numfigs > 0, f"No flow slices found for channel '{channel}'"
-    waterfall=np.zeros((numfigs,N))
-    propsizes=np.zeros((numfigs))
-    fixedfall=np.zeros((numfigs,np.size(gyax)))
-
-    zax=np.zeros(numfigs)
-    for fi,fig in enumerate(ffigs):
-        picc,elemi,propsize,position=pic[fig]
-        print(f"[DEBUG] {fig} – propsize = {propsize:.3e} m")
-       # tr=res[1]['transmission']
-        pxsize=propsize*1e6/np.shape(picc)[0]
-        imsize=np.shape(picc)[0]
-        halfsize=int(imsize/2)
-        tit=file[:-13]
-    #lineout
-        ZoomFactor=1
-        ps2=propsize/2/ZoomFactor
-
-        # ---- New center averaging option ----
-        center_average_width_px = 2  # <- average over ± this many pixels around center (set by user)
-
-        halfsize = int(imsize / 2)
-        if vertical_type == 'center':
-            w = center_average_width_px
-            start = max(0, halfsize - w)
-            end = min(imsize, halfsize + w + 1)
-            lineout = np.mean(picc[start:end, :], axis=0)
-        if vertical_type == 'average_horiz':
-            lineout = np.mean(picc, axis=0)  # average across x → result has unit per m²
-        if vertical_type=='vert-center':
-            lineout=picc[:,halfsize]
-        if vertical_type=='vert-integral':
-            lineout=np.mean(picc,1)
-        xax=np.arange(np.shape(picc)[0])
-        xax=(xax/np.size(xax)*ps2*2-ps2)*1e6 #um
-
-
-        ############# PLOT OF THE FLOW SUBFIGS FOR THE MOVIE ############
-        if flow_figs:
-            ff_fn='./'+ffdir+'fixed_{:04.0f}.jpg'.format(fi)
-            plot=1
-            if skip_existing:
-                import os
-                if fi!=-135 and os.path.isfile(ff_fn):
-                    plot=0
-                    print(fi,'    ',fig,' skipping')
-
-            if plot:
-                print(fi,'    ',fig,' plotting')
-                boxsize=100
-                mu.figure(10,10,safe=1)
-                npix=np.shape(picc)[0]
-                xc=(np.arange(npix)-npix/2)*pxsize
-                cmax=np.max(picc)
-                cl1=[cmax*flow_plot_crange,cmax]
-                picc=np.transpose(picc)
-                print(cl1)
-                mu.pcolor(picc,xc=xc,yc=xc,ticks=0,log=1,cl=cl1,background=[0,0,0])
-                plt.axis('equal')
-                h=boxsize/2
-                #plt.plot([-h,-h,h,h,-h],[-h,h,h,-h,-h],'r',alpha=0.3)
-                plt.plot([-h,-h,h,h,-h],[-h,h,h,-h,-h],'r.',alpha=1,markersize=7)
-                plt.xlabel('X [μm]')
-                plt.ylabel('Y [μm]')
-                plt.title(l + ', {:.0f} cm'.format(position*100))
-                plt.savefig(ffdir+'ff_{:04.0f}'.format(fi))
-
-                fff=50
-                fffx=fff*1.
-                plt.ylim(-fffx,fffx)
-                plt.xlim(-fff,fff)
-                plt.savefig(ff_fn)
-        if position>scatterer_L2_position:
-            lineout=lineout/scatterer_L2_loss/scatterer_L1_loss
-        elif position>=scatterer_L1_position:
-            lineout=lineout/scatterer_L1_loss
-        waterfall[fi,:]=lineout
-        zax[fi]=position
-
-        #inteprpprof=np.interp(gyax,xax,lineout)
-        #inteprpprof[gyax<np.min(xax)]=np.nan
-        #inteprpprof[gyax>np.max(xax)]=np.nan
-
-        inteprpprof = np.full_like(gyax, np.nan)
-        # Determine indices within the xax bounds
-        valid = (gyax >= np.min(xax)) & (gyax <= np.max(xax))
-        inteprpprof[valid] = np.interp(gyax[valid], xax, lineout)
-
-
-
-        #fixedfall[fi,:]=inteprpprof #old way
-        xaxis_um = np.arange(gyax_def[0], gyax_def[1], gyax_def[2])
-        inteprpprof = np.interp(xaxis_um, xax, lineout)
-        fixedfall[fi,:] = inteprpprof
-        propsizes[fi]=propsize
-
-    fixedfall[fixedfall<=0]=1e-30
-    waterfall[waterfall<=0]=1e-30
-
-    l2=l
-    l2+=' cut: '+vertical_type
-    if 0:
-        mu.figure(16,9)
-        nn=np.shape(picc)[0]
-        rax=np.arange(nn)/nn*100-50
-        pxsizes=propsizes*1e6/nn
-        boundary_200=200/pxsizes#px
-        boundary_200=boundary_200/nn*2*50 #%
-        boundary_200[boundary_200>65]=np.nan
-        mu.pcolor(xc=zax,yc=rax,data=waterfall,log=1,ticks=0,cl=cl)
-        plt.plot(zax,boundary_200,'r-')
-        plt.xlabel('Position [m]')
-        plt.ylabel('Box size [%]')
-        plt.title(l2)
-        plt.ylim(-50,50)
-        mu.savefig('./flows/boxflow_{:}_{:}'.format(l,vertical_type))
-
-    # ──── NEW: rescale to photons or W/cm² *once* ──────────────────
-    scale = 1.0                       # default → relative units
-    if unit_sel == 'photons':
-        scale = scale_ph              # read from the pickle header
-        y_label = "photons / px"
-    elif unit_sel == 'Wcm2':
-        scale = scale_Wcm
-        y_label = "W cm⁻²"
-    else:
-        y_label = "Normalised Intensity"
-
-    waterfall *= scale                # apply the same factor to
-    fixedfall *= scale                #   both data sets
-    cl = [float(c) * scale for c in cl]      # rescale colour-bar limits
-    #print("DEBUG flow scale =", scale, "unit =", unit_sel)
-    # ----------------------------------------------------------------
-
-    ################## PLOT OF THE MAIN FLOW FIG #####################
-    #mu.figure(16,9)
-    fig, ax = plt.subplots(figsize=(14, 8))
-
-    #print(cl)
-    linearize = 0 #linearize option is used in the case where the X and Y axis are not linear. (Don't activate it)
-    if linearize:
-        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=1,ticks=0,cl=cl,linearize=1) #,xtics_spacing=1
-        pos=np.arange(0,np.size(zax),15)
-        vals=[]
-        for va in zax[pos]:
-            vals.append('{:.1f}'.format(va))
-        plt.xticks(pos,vals)
-        plt.yticks(np.arange(0,np.size(gyax)+1,50))
-        plt.ylabel(f"Horizontal position [μm]\n({y_label})")
-    else:
-        mu.pcolor(xc=zax,yc=gyax,data=fixedfall,log=log,ticks=None,cl=cl,colorbar=False)
-
-        # ─── Add colorbar with correct units ───
-        cb = plt.colorbar()
-        if vertical_type in ("average_horiz", "center"):
-            if unit_sel == "photons":
-                cb.set_label("photons / m²")
-            elif unit_sel == "Wcm2":
-                cb.set_label("W / m²")
-            else:
-                cb.set_label("relative units")
-        else:
-            cb.set_label(y_label)
-
-
-    profile=mu.normalize(propsizes)*np.max(gyax)
-    maxy=np.min(gyax)
-    if not partial:
-
-        ip=res[0]
-        row=0
-        plt.xlim(xl)
-        for el_name in ip:
-            el=ip[el_name]
-            if 'position' not in el: continue
-            if not mu.yamlval('in',el,1): continue
-            if len(el_name)==2:
-                yline=maxy*0.72
-                col=[1,0.9,0.7]
-                if 'L' in el_name:
-                    yline=maxy*0.8
-                    col=[1,0.5,0.9]
-
-            else:
-                yline=maxy*(0.95-row*0.05)
-                col='w'
-            mu.text(el['position']+0.05,yline,el_name,color=col,fs=16,zorder=50,background=None)
-            plt.plot([el['position'],el['position']],[maxy,yline],color=col)
-            if len(el_name)!=2:
-                row+=1
-                if row>3:row=0
-
-        plt.xlabel('Position [m]')
-        plt.ylabel('Horizontal position [μm]')
-        if xl==None:
-            plt.xlim(np.min(zax),np.max(zax))
-        else:
-            plt.xlim(xl)
-        plt.plot(zax,profile,'r-')
-
-    # -------- Ploting a small vertical white line at the location of the detector and of size = roi pixel ---------
-    roi=13
-    det_pos = params.get('elements', {}).get('Det', {}).get('position', 7.0)  # fallback to 7.0 if missing
-    plt.plot([det_pos, det_pos], [-roi/2, roi/2], 'w-', lw=5)
-    
-
-    plt.title(l2)
-
-    #print("Available keys in intensities:", params.get('intensities', {}).keys())
-    centralelement = "TCC"
-    if f"{centralelement}_{channel}" not in params["intensities"]:
-        centralelement = "PH"
-    key_central = f"{centralelement}_{channel}"
-
-
-    intens = params["intensities"]
-
-    if key_central in intens:
-        t1 = intens[key_central] / intens["start"]
-        tr_scat = yamlval("transmission_of_scatterer_L2", params, 1)
-
-        if "roi" in intens and "roi2" in intens:
-            t13 = intens["roi"] / intens[key_central] / tr_scat
-            t75 = intens["roi2"] / intens[key_central] / tr_scat
-            print(f"SFA13 = {t13:.2e}, SFA75 = {t75:.2e}, Ratio = {t75/t13:.2f}")
-            # Add text annotations using axis-relative coordinates
-            ax = plt.gca()
-
-            ax.text(0.98, 0.85, f"SFA13 = {t13:.2e}",
-                    transform=ax.transAxes, color='red', fontsize=14,
-                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-
-            ax.text(0.98, 0.77, f"SFA75 = {t75:.2e}",
-                    transform=ax.transAxes, color='black', fontsize=14,
-                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-
-            ax.text(0.98, 0.69, f"SFA75/SFA13 = {t75/t13:.0f}",
-                    transform=ax.transAxes, color='black', fontsize=11,
-                    ha='right', va='top', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-            
-    flow_path = Path(project_dir) / 'flows' / f'flow_{l}_{channel}_{vertical_type}'
-    plt.tight_layout()
-
-    mu.savefig(str(flow_path))
-
-    # Get beam_shaper position from the YAML
-    elements_dict = res[0]
-    beam_shaper_pos = None
-    if "beam_shaper" in elements_dict:
-        if yamlval("in", elements_dict["beam_shaper"], 1):
-            beam_shaper_pos = elements_dict["beam_shaper"]["position"]
-
-
-    if beam_shaper_pos is not None:
-        idx = np.argmin(np.abs(zax - beam_shaper_pos))
-        idx = idx + 10 # Just to be sure that we are after the beam_shaper and now before.
-        # Use full 2D field for "center" mode
-        if vertical_type in ("center", "vert-center"):
-            fig_beamshaper = ffigs[idx]
-            raw_picc, _, propsize, _ = pic[fig_beamshaper]
-            dx_m = propsize / N
-            dy_m = dx_m  # assume square pixels for now
-
-            # Apply scaling
-            if unit_sel == "photons":
-                picc_scaled = raw_picc * scale_ph
-            elif unit_sel == "Wcm2":
-                picc_scaled = raw_picc * scale_Wcm
-            else:
-                picc_scaled = raw_picc  # relative units
-
-            total_photons = np.nansum(picc_scaled) * dx_m * dy_m
-
-        else:
-            # Original computation (works only for average profiles)
-                dy_m = (gyax[1] - gyax[0]) * 1e-6
-                Lx_m = propsizes[idx]  # total horizontal width in meters
-                total_photons = np.nansum(fixedfall[idx, :]) * dy_m * Lx_m
-
-        photons_yaml = params.get("photons_total", None)
-
-        if unit_sel == "photons":
-            print(f"\n✅ Flow-slice index matching beam_shaper position {beam_shaper_pos:.2f} m (raw index n°{idx})→ closest = z = {zax[idx]:.2f} m")
-            print(f"→ Total photons from flow profile = {total_photons:.3e} (integrated over x and y)")
-
-            if photons_yaml:
-                print(f"→ Target photons_total from YAML = {photons_yaml:.3e}")
-                print(f"→ Relative error = {(total_photons - photons_yaml)/photons_yaml:.2%}")
-
-    res[1]["propsizes"] = propsizes
-
-
-    return params, res, fixedfall
-"""
 
 
 def flow_savefig(I,ffdir,fi,propsize,label,position,flow_plot_crange=1e-5):

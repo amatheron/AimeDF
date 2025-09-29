@@ -27,9 +27,11 @@ from LightPipes import *
 
 import mmmUtils_v2 as mu
 import rossendorfer_farbenliste as rofl
-import diffra_v2 as df
+#import diffra_v2 as df
+import VIBE as vibe
 from importlib import reload
-reload(df)
+#reload(df)
+reload(vibe)
 
 warnings.filterwarnings("ignore")
 version = 1
@@ -108,20 +110,6 @@ paramss = {}
 
 f = open(yamlfile)
 ip = yaml.safe_load(f)
-
-#if simulation_type == 1:
-#    N = N_positive if N_positive > 0 else df.yamlval('N_positive', ip['simulation'], 5000)
-#elif simulation_type == 2:
-#    N = N_squeezed if N_squeezed > 0 else df.yamlval('N_squeezed', ip['simulation'], 5000)
-#else:
-#    N = N_negative if N_negative > 0 else df.yamlval('N_negative', ip['simulation'], 5000)
-
-#if N == 0:
-#    print('Skipping simulation with N = 0')
-#    continue
-
-#print(f"#### Doing the simulation type {simulation_type}: {sts[simulation_type]}, N={N}")
-
 N = int(args.N)
 print(f"#### Starting simulation,resolution N={N}")
 
@@ -136,28 +124,12 @@ for name in ip:
 #---------------------------------------------------------------------------------------
 
 
-#removable = ['O1', 'O2', 'O1wb'] # elements to remove for the positive simulation
-#insertable = ['TCC', 'squeezer'] # elements to add for the squeezed simulation
-
-#if simulation_type == 1: #Positive simulation : removing the elements in "removable"
-#    for el in Elements:
-#        if el[1] in removable:
-#            el[2]['in'] = False
-#if simulation_type == 2: # Squeezed simulation : adding the elements in "insertable"
-#    for el in Elements:
-#        if el[1] in insertable:
-#            el[2]['in'] = 1 # Set 'in' to 1 in the dictionnary of object properties
-
-#if forcescatter:
-#    for el in Elements:
-#        if el[1] in ['L1', 'L2']:
-#            el[2]['scatterer'] = 1
-
 params = ip['simulation']
 XFEL_photon_E = ip['beam']['photonenergy']
 params['photons_total']  = float(ip['beam']['photons_total']) if 'photons_total' in ip['beam'] else None
 params['pulse_duration'] = float(ip['beam']['pulse_duration']) if 'pulse_duration' in ip['beam'] else None
-params['intensity_units'] = df.yamlval('intensity_units', ip['simulation'], 'relative')
+#params['intensity_units'] = df.yamlval('intensity_units', ip['simulation'], 'relative')
+params['intensity_units'] = vibe.yamlval('intensity_units', ip['simulation'], 'relative')
 params['Zoom_global']  = float(ip['simulation']['Zoom_global']) if 'Zoom_global' in ip['simulation'] else 1
 
 
@@ -169,7 +141,7 @@ params.update({
     'fig_cols': 5,
     'beamsize': float(ip['beam']['size']),
     'gauss_x_shift': float(ip['beam']['offset']),
-    'gauss_x_tilt': df.yamlval('tilt', ip['beam'], 0),
+    'gauss_x_tilt': vibe.yamlval('tilt', ip['beam'], 0),
     'remove_ticks': 1
 })
 
@@ -193,7 +165,7 @@ params['ax_apertures'] = None
 params['projectdir'] = projectdir  
 
 #------------- RUN THE SIMULATION -----------
-params, trans, figs = df.doit(params, Elements) 
+params, trans, figs = vibe.main_VIBE(params, Elements) 
 
 
 mu.dumpPickle([ip, params], str(projectdir) + '/pickles/' + fn + '_res')

@@ -21,12 +21,22 @@ DEFAULT_SBATCH_PARAMS = {
     'n_cpus': 24,
     'time': '24:00:00',
     'mem': '100GB',
-    'script_path': '/home/yu79deg/darkfield_p5438/src/darkfield/dfdf_Aime.py'
+    'script_path': '/home/yu79deg/darkfield_p5438/src/darkfield/Launch_VIBE.py'
 }
 
 
 def write_bash(path, N, upd_params={}, bash_name=None):
-    
+    """
+    Generate a Slurm script to launch a VIBE simulation.
+
+    Args:
+        path (str | Path): directory where the .slurm file is written
+        N (int): grid size passed to Launch_VIBE.py as -N
+        upd_params (dict): may include:
+            - 'yaml' (required): path to the YAML config (absolute or relative to project root)
+            - any DEFAULT_SBATCH_PARAMS key to override (partition, time, mem, script_path, ...)
+        bash_name (str | None): filename for the script (defaults to 'job.slurm')
+    """    
     bash_params = DEFAULT_SBATCH_PARAMS.copy()
 
     if upd_params:

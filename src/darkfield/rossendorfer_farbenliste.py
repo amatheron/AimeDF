@@ -2,17 +2,25 @@ from matplotlib.image import imread
 from matplotlib.colors import LinearSegmentedColormap
 #import matplotlib.pyplot as plt
 
-#img = imread('./Gradients.png')
-#plt.imshow(img[50:60,:])
-# img is 30 x 280 but we need just one col
-# commonly cmpas have 256 entries, but since img is 280 px => N=280
 
-#colors_from_img = img[40, :, :]
-#rofl_old = LinearSegmentedColormap.from_list('my_cmap', colors_from_img, N=694)
 
-#return 
-#colors_from_img = img[70, :, :]
-#colors_from_img.tolist()
+# --- NEW: VIBE_SPECTRA palette (black → indigo → blue → cyan → lime → yellow → orange → red → white)
+_VIBE_SPECTRA = LinearSegmentedColormap.from_list(
+    "VIBE_SPECTRA",
+    [
+        "#000000",  # black
+        "#2b0b3f",  # indigo
+        "#2043a8",  # royal blue
+        "#00bcd4",  # cyan
+        "#7bd100",  # lime
+        "#ffe800",  # yellow
+        "#ff8a00",  # orange
+        "#e53935",  # red
+        "#ffffff",  # white
+    ],
+    N=256,
+)
+
 colors_from_img=[[0.0, 0.0, 0.0, 1.0],
  [0.0, 0.0, 0.003921568859368563, 1.0],
  [0.0, 0.0, 0.003921568859368563, 1.0],
@@ -1441,9 +1449,13 @@ def g2():
 def g3():
     return helmholtzgray3
 
-def cmap():
+def cmap_old():
+    """Previous default colormap."""
     return acmap
 
+def cmap():
+    """New default colormap used by all plots unless overridden."""
+    return _VIBE_SPECTRA
 
 def cmap_nw():
     return acmap_nw

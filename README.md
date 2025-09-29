@@ -18,9 +18,9 @@ AimeDF simulates the **dark-field** X-ray experiment where an XFEL probe collide
 
 ## Repository layout (high level)
 
-- `dfdf_Aime.py` — Driver: loads a YAML configuration, builds the element list, and launches the simulation via `diffra_v2.doit(...)`.
-- `diffra_v2.py` — Core simulator and utilities (optical elements, propagation, plotting, flows, VB).  
-  Key internals include the **main loop `doit`**, **element application**, **Henke-table index handling**, **aperture & phase/thickness maps**, **air-scattering**, and **VB masks**.
+- `Launch_VIBE.py` — Driver: loads a YAML configuration, builds the element list, and launches the simulation via `VIBE.main_VIBE(...)`.
+- `VIBE.py` — Core simulator and utilities (optical elements, propagation, plotting, flows, VB).  
+  Key internals include the **main loop `main_VIBE`**, **element application**, **Henke-table index handling**, **aperture & phase/thickness maps**, **air-scattering**, and **VB masks**.
 - `optical_constants/*.txt` — Henke optical constants used by `get_index(...)` to build δ, β at runtime.
 - `darkfield/*` — Project helpers (utils, color maps, regularized propagation). `regularized_propagation_v2` supports numerically stable long-range propagation.
 - `flows/`, `figs/` — Auto-saved figures (flow waterfalls, mosaics, snapshots), controlled from YAML.
@@ -36,10 +36,10 @@ Everything is driven by a **YAML file** describing:
 - **Optical elements:** ordered in Z with `position` and `type` (`aperture`, `phaseplate`, `parabolic_lens`, `reg/dereg`, `zoom_window`, `Det`, `TCC`, `beam_shaper`, …) and element parameters (sizes, thicknesses, ROC, materials, custom profiles, switches like `in: 0/1`).  
 - **VB block (at TCC):** turning on `VB_signal: 1` triggers VB mask construction from the IR intensity map and spawns the VB channels.
 
-`dfdf_Aime.py` reads this YAML, constructs the element list `[(z, name, dict), …]`, and calls:
+`Launch_VIBE.py` reads this YAML, constructs the element list `[(z, name, dict), …]`, and calls:
 
 ```python
-params, trans, figs = diffra_v2.doit(params, elements)
+params, trans, figs = VIBE.main_VIBE(params, elements)
 ```
 
 ---
@@ -67,7 +67,7 @@ params, trans, figs = diffra_v2.doit(params, elements)
 
 ---
 
-## Inside `diffra_v2.py` — important building blocks
+## Inside `VIBE.py` — important building blocks
 
 ### Field containers & propagation
 - **`FieldBundle` dataclass** groups LightPipes fields under channel keys (currently `"main"`, later `"VB_parr"`, `"VB_perp"`), with a shared z-position and regularization flags.  
@@ -126,7 +126,7 @@ intensity_units: photons
 fig_rows: 2
 fig_cols: 3
 
-# Elements (unordered; dfdf sorts by position)
+# Elements (unordered; Launch_VIBE sorts by position)
 elements:
   start:
     type: plane
@@ -171,7 +171,7 @@ elements:
 2. **Launch**
 
    ```bash
-   python dfdf_Aime.py --yaml path/to/your_config.yaml
+   python Launch_VIBE.py --yaml path/to/your_config.yaml
    ```
 
    The script will print a summary of parameters, then generate per-plane figures, a flow panel, and optional movie frames/exports depending on your YAML switches.
