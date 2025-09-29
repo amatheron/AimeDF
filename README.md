@@ -182,16 +182,10 @@ elements:
 
 ---
 
-## How the VB feature works (short version)
+## How the VB feature works
 
 At **TCC**, the IR pump profile is synthesized as a 2-D **Airy** or **Gaussian** intensity map and converted to **W cm⁻²** using `P_peak` (computed from pulse energy or set directly). Using the standard analytical prefactor (`I_cr`, fine-structure constant, geometry), the code builds two **unitless masks** for **VB∥** and **VB⊥**. Multiplying these masks with the **main** X-ray field **spawns** the two VB channels in the **FieldBundle**. From there, the **same propagation** and **same element stack** apply to all channels, so VB is carried all the way to the detector.
 
 ---
 
-## Citing / Acknowledgement
 
-If this code contributes to a publication, consider citing the optical-constants source (Henke) and LightPipes. For VB/DF context, include your experimental references and facility acknowledgements as appropriate.
-
----
-
-[LightPipes]: https://github.com/opticspy/lightpipes
