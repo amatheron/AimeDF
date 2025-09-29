@@ -3,7 +3,7 @@
 </p>
 
 
-# AimeDF — Dark-Field X-ray Propagation & Vacuum Birefringence Simulator
+# VIBE : Vacuum Induced Birefringence Explorer
 
 ## What this project does
 
