@@ -3,6 +3,7 @@
 __pycache__/
 *.log
 *.png
+!docs/VIBE_logo.png
 *.tiff
 *.sif
 *.h5
