@@ -3,15 +3,16 @@
 #----------------------------------------- Latest updated : September 2025. All rights reserved. -------------------------------------------------------------------
 #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-
+import h5py, json
 from LightPipes import *
 import numpy as np
 import sys
 import os
+import re
 import time
 from LightPipes import Field
 
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.colors import LogNorm
@@ -21,12 +22,16 @@ from scipy import signal
 from scipy.ndimage import map_coordinates
 
 from pathlib import Path
+from typing import Optional
+
+import argparse, yaml, warnings
 
 from skimage.transform import resize
 from scipy.signal import fftconvolve
 from scipy.ndimage import gaussian_filter1d
-from scipy.constants import e, epsilon_0, hbar, c, h, pi
+from scipy.constants import e, m_e, epsilon_0, hbar, c, h, pi
 from scipy.special import j1
+from scipy.interpolate import RegularGridInterpolator
 
 import darkfield.rossendorfer_farbenliste as rofl
 import darkfield.mmmUtils_v2 as mu
@@ -34,6 +39,440 @@ import darkfield.regularized_propagation_v2 as rp
 
 from dataclasses import dataclass
 from typing import Dict   # only for type hints
+
+from numpy.polynomial.hermite import hermgauss
+from scipy.special import wofz  # Faddeeva function (robust for complex)
+from scipy.interpolate import RegularGridInterpolator
+import darkfield.wavefront_fitting as wft  # your local module
+
+def _select_backend():
+    os.environ.pop("MPLBACKEND", None)
+    if os.environ.get("DISPLAY", "") == "":
+        print("No display detected: using non-interactive 'Agg' backend.")
+        matplotlib.use("Agg")
+    else:
+        print("Display detected: using 'TkAgg' backend.")
+        matplotlib.use("TkAgg")
+
+
+# --------------- Load the input file ---------------
+def load_cfg(yaml_path: str) -> dict:
+    p = Path(yaml_path)
+    if not p.exists():
+        raise FileNotFoundError(f"YAML not found: {p}")
+    with open(p, "r") as f:
+        return yaml.safe_load(f)
+
+
+# ------------ Create the list of optical elements from the input file ---------
+def elements_from_cfg(cfg: dict) -> list:
+    elems = []
+    for name, obj in cfg.items():
+        if name in ("Xbeam", "IRLaser", "simulation", "meta"):
+            continue
+        obj = dict(obj)
+        obj["element_name"] = name
+        elems.append([obj["position"], name, obj])
+    elems.sort(key=lambda e: e[0])  # sort by z-position
+    return elems
+
+
+# ------------ Read the yaml file values with fallback possibility ---------
+def yamlval(k, d, default):
+    return d[k] if k in d and d[k] is not None else default
+
+# ------------ Build the input parameters list from the yaml file ---------
+def build_input_params(cfg: dict, *, N: int, projectdir: str, filename: str) -> dict:
+    X  = cfg.get("Xbeam", {})
+    IR = cfg.get("IRLaser", {})
+    S  = cfg.get("simulation", {})
+
+    return {
+        # ---- identifiers & paths ----
+        "N": int(N),
+        "filename": filename,
+        "projectdir": projectdir,
+
+        # ---- core simulation inputs (X-ray & grid) ----
+        "photon_energy": float(yamlval("photonenergy", X, 8766)),   # fallback 8766 eV
+        "beamsize":      float(yamlval("size", X, 0.002)),          # fallback 2 mm
+        "gauss_x_shift": float(yamlval("offset", X, 0.0)),
+        "gauss_x_tilt":  float(yamlval("tilt", X, 0.0)),
+        "propsize":      float(yamlval("propsize", S, 0.0)),
+        "simulation_type": 0,
+
+        # ---- intensity units & zoom ----
+        "intensity_units": yamlval("intensity_units", S, "relative"),
+        "Zoom_global":     float(yamlval("Zoom_global", S, 1)),
+
+        # ---- plotting knobs used throughout main_VIBE ----
+        "fig_rows": 4, "fig_cols": 5,
+        "remove_ticks": 1,
+        "fig_start": 3,
+        "profiles_subfig": 1,
+        "ax_apertures": None,
+
+        # ---- optional flow/figs controls ----
+        "figs_to_save":   yamlval("figs_to_save", S, []),
+        "figs_to_export": yamlval("figs_to_export", S, []),
+        "figs_log":       yamlval("figs_log", S, 1),
+        "flow_auto_save": yamlval("flow_auto_save", S, 0),
+        "flow_plot_gyax": yamlval("flow_plot_gyax", S, None),
+        "flow_plot_clim": yamlval("flow_plot_clim", S, None),
+        "profiles_xlim":  yamlval("profiles_xlim", S, [0, 200]),
+        "intensity_ylim": yamlval("intensity_ylim", S, [1e-10, 2.0]),
+        "apertures_ylim": yamlval("apertures_ylim", S, [1e-10, 2.0]),
+        "edge_damping":        yamlval("edge_damping", S, None),
+        "edge_damping_shape":  yamlval("edge_damping_shape", S, None),
+        "method":              yamlval("method", S, "FFT"),
+        "subfigure_size_px":   yamlval("subfigure_size_px", S, 300),
+        "flow":                yamlval("flow", S, None),
+
+        # ---- X-ray pulse scaling ----
+        "photons_total":   float(yamlval("photons_total", X, 2e11)),
+        "X_FWHM_duration": float(yamlval("X_FWHM_duration", X, 25e-15)),
+
+        # ---- IR block (VB mask @ TCC) ----
+        "IR_Energy_J":       float(yamlval("IR_Energy_J", IR, 4.8)),
+        "IR_FWHM_duration":  float(yamlval("IR_FWHM_duration", IR, 30e-15)),
+        "IR_wavelength":     float(yamlval("IR_wavelength", IR, 800e-9)),
+        "IR_x_offset_m":     float(yamlval("IR_x_offset_m", IR, 0.0)),
+        "IR_y_offset_m":     float(yamlval("IR_y_offset_m", IR, 0.0)),
+        "Timing_jitter":     float(yamlval("Timing_jitter", IR, 0.0)),
+        "IR_FWHM_gaussian":  float(yamlval("IR_FWHM_gaussian", IR, 1.3e-6)),
+        "IR_2Dmap":          yamlval("IR_2Dmap", IR,
+                                     ["gaussian", "match_integral", None, None]),
+    }
+
+
+
+
+
+# ------------------------------------------------------------------
+# --- DABAM2D surface loader ---------------------------------------
+# ------------------------------------------------------------------
+
+
+
+# ---- DABAM2D loader (robust) ------------------------------------
+
+
+def _read_dabam_meta(txt_path: Path) -> dict:
+    if not txt_path.exists():
+        return {}
+    raw = txt_path.read_text()
+    # 1) try JSON
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    # 2) try Python-literal dict (DABAM2D README shows this style)
+    try:
+        meta = ast.literal_eval(raw)
+        if isinstance(meta, dict):
+            return meta
+    except Exception:
+        pass
+    # 3) very simple "key: value" fallback
+    meta = {}
+    for line in raw.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip()
+    return meta
+
+def load_dabam2d(index: int, dabam_root: str | Path = None):
+    """
+    Load a DABAM2D surface by index.
+    Returns: X (Nx,), Y (Ny,), Z (Ny,Nx), meta (dict)
+    """
+    if dabam_root is None:
+        dabam_root = Path(__file__).parent / "Dabam2D" / "data"
+    else:
+        dabam_root = Path(dabam_root)
+
+    stem = f"dabam2d-{index:04d}"
+    h5_path  = dabam_root / f"{stem}.h5"
+    txt_path = dabam_root / f"{stem}.txt"
+
+    if not h5_path.exists():
+        raise FileNotFoundError(f"{h5_path} not found. Clone the DABAM2D repo into src/darkfield/Dabam2D.")
+
+    with h5py.File(h5_path, "r") as f:
+        X = f["surface_file/X"][()]  # horizontal
+        Y = f["surface_file/Y"][()]  # vertical
+        Z = f["surface_file/Z"][()]  # shape (Y.size, X.size)
+
+    meta = _read_dabam_meta(txt_path)
+    return X, Y, Z, meta
+
+
+def build_dabam_defect_thickness_map(el_dict, params, xm, ym, A_m):
+    """
+    Returns a thickness *delta* [m] on the simulation grid (same shape as xm/ym)
+    to be ADDED to the ideal CRL thickness. Behavior controlled by YAML keys:
+
+      defects: 1/0
+      experimental_data: "dabam2d-0021" or int index 21
+      defect_type: 1 (Zernike fit only) | 2 (residues only) | 3 (fit + residues)
+      remove_avg_profile: 1/0
+      Custom_zernike: [flag, noll_1, val_1_m, noll_2, val_2_m, ...]
+      nmodes: int (default 37)
+      startmode: int (default 1)
+
+    Notes:
+      • The DABAM map is rescaled to fill a circle of radius A/2 (aperture).
+      • The result is masked outside the aperture.
+    """
+    import re
+    import numpy as np
+    from scipy.interpolate import RegularGridInterpolator
+    import darkfield.wavefront_fitting as wft  # local module
+
+    # ---- YAML options -----------------------------------------------
+    defects_flag   = int(el_dict.get("defects", 0))
+    expdata_raw    = el_dict.get("experimental_data", None)
+    defect_type    = int(el_dict.get("defect_type", 3))
+    remove_avg     = int(el_dict.get("remove_avg_profile", 0))
+    custom_list    = el_dict.get("Custom_zernike", [])
+    nmodes         = int(el_dict.get("nmodes", 37))
+    startmode      = int(el_dict.get("startmode", 1))
+
+    # try to grab a human-friendly element name
+    elem_name = el_dict.get("element_name", el_dict.get("name", el_dict.get("label", "Custom_CRL")))
+
+    custom_active  = (
+        isinstance(custom_list, (list, tuple)) and len(custom_list) >= 1 and int(custom_list[0]) == 1
+    )
+
+    # Parse DABAM index (prefer 'dabam2d-XXXX', else last digits in the string)
+    idx = None
+    if isinstance(expdata_raw, (int, np.integer)):
+        idx = int(expdata_raw)
+    elif isinstance(expdata_raw, str):
+        s = expdata_raw.strip()
+        m = re.search(r"dabam2d-(\d+)$", s, flags=re.IGNORECASE)
+        if m:
+            idx = int(m.group(1))
+        else:
+            nums = re.findall(r"(\d+)", s)
+            if nums:
+                idx = int(nums[-1])
+
+
+    # concise config line
+    print(
+        "[DABAM] "
+        f"defects={'on' if defects_flag==1 else 'off'} | "
+        f"experimental_data={expdata_raw if expdata_raw is not None else 'n/a'}"
+        f"{f' (idx={idx})' if idx is not None else ''} | "
+        f"defect_type={defect_type} ({_defect_type_label(defect_type)}) | "
+        f"remove_avg_profile={'on' if remove_avg==1 else 'off'} | "
+        f"Custom_zernike={'on' if custom_active else 'off'} | "
+        f"nmodes={nmodes} | startmode={startmode}"
+    )
+
+    # Bail out if not requested
+    if defects_flag != 1:
+        return np.zeros_like(xm)
+
+    if idx is None:
+        print("[DABAM] Could not parse a valid index from 'experimental_data' — no defects applied.")
+        return np.zeros_like(xm)
+
+    # --- Load DABAM map (meters) + metadata
+    X, Y, Z, meta = load_dabam2d(idx)  # Z in meters, shape (Ny, Nx)
+    Ny, Nx = Z.shape
+
+    # ---- Pretty-print metadata block --------------------------------
+    def _coerce_to_float(s):
+        try:
+            return float(str(s))
+        except Exception:
+            return None
+
+    # order a few important keys first, then the rest (non-null only)
+    ordered_keys = [
+        "USER_REFERENCE", "MATERIAL", "FACILITY", "INSTRUMENT",
+        "RS", "RM", "WIDTH", "LENGTH", "FOCUS_DIR", "SCAN_DATE",
+        "YEAR_FABRICATION", "SURFACE_SHAPE", "FUNCTION", "THICK",
+        "SUBSTRATE", "COATING", "POLISHING", "ENVIRONMENT",
+    ]
+    remaining = [k for k in sorted(meta.keys()) if k not in ordered_keys]
+
+    print(f"[DABAM] {elem_name} simulated via {expdata_raw} (idx={idx}) with properties:")
+    for k in ordered_keys + remaining:
+        if k not in meta:
+            continue
+        v = meta[k]
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            continue
+        # pretty units for common metric fields that arrive as strings
+        if k in ("RS", "RM", "WIDTH", "LENGTH", "THICK"):
+            vf = _coerce_to_float(v)
+            if vf is not None:
+                print(f"        {k:<14}: {vf:.6g} m")
+                continue
+        print(f"        {k:<14}: {v}")
+
+    # --- Zernike decomposition --------------------------------------
+    Zcoeffs, Zfit, Zres = wft.fit_zernike_circ(
+        Z, nmodes=nmodes, startmode=startmode, rec_zern=True
+    )
+
+    el_dict["Z_coeffs_native"]  = np.asarray(Zcoeffs).copy()
+    el_dict["nmodes_used"]      = int(nmodes)
+    el_dict["startmode_used"]   = int(startmode)
+
+    Zres = -Zres # The way Zres is defined in fit_zernike_circ is wrong in sign. We refine it such that Z = Zres+Zfit
+
+    Zres_unproc = Zres.copy()                    # save before any optional processing
+    el_dict["Z_residues_native_unproc"] = Zres_unproc
+
+    # --- Optional azimuthal-average removal on residues --------------
+    residues_map = Zres
+    if remove_avg == 1:
+        I_thick_res, R = wft.average_azimuthal(residues_map, X, Y)
+        _, residues_map = wft.remove_avg_profile(residues_map, None, X, Y, I_thick_res, R, 'b')
+    el_dict["remove_avg_applied"] = int(remove_avg == 1)
+    el_dict["Z_residues_native"] = residues_map
+
+
+    # --- Zernike choice logic (custom vs fitted) ---------------------
+    if custom_active:
+        pairs = list(custom_list[1:])
+        if len(pairs) % 2 != 0:
+            raise ValueError("Custom_zernike must contain pairs: [1, n1, v1, n2, v2, ...]")
+        nolls = [int(pairs[i])   for i in range(0, len(pairs), 2)]
+        vals  = [float(pairs[i]) for i in range(1, len(pairs), 2)]
+        max_n = max(nolls) if nolls else 0
+
+        zvec = np.zeros(max(1, max_n), dtype=float)
+        for n, v in zip(nolls, vals):
+            zvec[n-1] = v  # Noll indices start at 1
+
+        # prefer odd->even safety to match typical DABAM even sizes
+        rad_px   = (min(Nx, Ny) - 1) // 2
+        Zfit_map = wft.calc_zernike_circ(zvec, rad=rad_px, mask=True)
+    else:
+        Zfit_map = Zfit  # LSQ fitted Zernike map
+
+    # --- FORCE Zfit_map to match native DABAM size Z.shape (center crop/pad) ---
+    ty, tx = Z.shape
+    ay, ax = Zfit_map.shape
+
+    # center-crop if Zfit_map is larger
+    if ay > ty:
+        y0 = (ay - ty) // 2
+        Zfit_map = Zfit_map[y0:y0 + ty, :]
+    if ax > tx:
+        x0 = (ax - tx) // 2
+        Zfit_map = Zfit_map[:, x0:x0 + tx]
+
+    # recompute after potential crop
+    ay, ax = Zfit_map.shape
+    py_top  = (ty - ay) // 2
+    py_bot  = (ty - ay) - py_top
+    px_left = (tx - ax) // 2
+    px_right= (tx - ax) - px_left
+
+    if py_top or py_bot or px_left or px_right:
+        Zfit_map = np.pad(
+            Zfit_map,
+            ((py_top, py_bot), (px_left, px_right)),
+            mode='constant',
+            constant_values=0.0
+        )
+    # ---------------------------------------------------------------------------
+    # --- after Zfit_map has the same shape as Z (native DABAM grid) ---
+    el_dict["Z_fit_panel_map"]   = Zfit_map.copy()     # what the "Zernike fit" panel should show
+    el_dict["Zfit_is_custom"]    = 1 if custom_active else 0
+    el_dict["dabam_X"]           = X                   # keep coordinates for the plot
+    el_dict["dabam_Y"]           = Y
+    el_dict["Z_raw_native"]      = Z                   # optional: raw map for the panel
+    el_dict["Z_residues_native"] = residues_map        # optional: residues (post-processing if any)
+
+
+    # --- Compose the defect thickness BEFORE resampling --------------
+    if defect_type == 1:
+        Z_def_src = Zfit_map
+    elif defect_type == 2:
+        Z_def_src = residues_map
+    elif defect_type == 3:
+        Z_def_src = Zfit_map + residues_map
+    else:
+        print(f"[DABAM] Unknown defect_type={defect_type}, defaulting to Zernike+residues.")
+        Z_def_src = Zfit_map + residues_map
+
+    # --- Map DABAM -> simulation grid --------------------------------
+    Rx = 0.5 * (X.max() - X.min())
+    Ry = 0.5 * (Y.max() - Y.min())
+    Rsrc  = min(Rx, Ry) if (Rx > 0 and Ry > 0) else 1.0         # DABAM half-size (min axis)
+    Rdst  = A_m / 2.0                                            # simulation lens radius
+    rescale_flag = int(el_dict.get("rescale_dabam", 1))
+
+    # build interpolator on native (Y, X) coordinates
+    interp = RegularGridInterpolator((Y, X), Z_def_src, bounds_error=False, fill_value=0.0)
+
+    if rescale_flag == 1:
+        # --- RESCALE: stretch/shrink to fill the aperture -------------
+        scale = Rdst / Rsrc if Rsrc > 0 else 1.0
+        pts = np.column_stack([(ym / scale).ravel(), (xm / scale).ravel()])
+        Z_def_resampled = interp(pts).reshape(xm.shape)
+
+        policy = "rescale: fill aperture"
+        note   = "stretch to fill" if scale > 1 else ("shrink to fill" if scale < 1 else "1:1")
+
+    else:
+        # --- NO RESCALE: sample in native metric coordinates ----------
+        # points are directly the simulation coords (same unit: meters)
+        scale = 1.0
+        pts = np.column_stack([ym.ravel(), xm.ravel()])
+        Z_def_resampled = interp(pts).reshape(xm.shape)
+
+        policy = "no-rescale: keep native size"
+        note   = "DABAM smaller than lens ⇒ zero defects outside" if Rsrc < Rdst else \
+                 ("DABAM larger than lens ⇒ masked at lens edge" if Rsrc > Rdst else "1:1 size")
+
+        # Loud warning if DABAM disk is smaller than lens (you’ll have a “clean” ring)
+        if Rsrc < Rdst:
+            print("="*72)
+            print("[DABAM][WARNING] DABAM radius is SMALLER than the lens radius (no-rescale mode).")
+            print(f"           Rsrc = {Rsrc*1e6:.1f} µm < Rdst = {Rdst*1e6:.1f} µm")
+            print("           Outside the DABAM disk there will be NO defects (zeros).")
+            print("           Set 'rescale_dabam: 1' to fill the whole lens with scaled defects.")
+            print("="*72)
+
+    # Mask outside aperture (always)
+    r = np.sqrt(xm**2 + ym**2)
+    Z_def_resampled[r > Rdst] = 0.0
+
+    # Store for diagnostics (incl. plotting extent and resample meta)
+    el_dict["Z_def_resampled"]    = Z_def_resampled
+    el_dict["Z_interp_extent_um"] = [xm.min()*1e6, xm.max()*1e6, ym.min()*1e6, ym.max()*1e6]
+    el_dict["Z_resample_info"]    = {
+        "policy": policy,
+        "note": note,
+        "rescale_flag": int(rescale_flag),
+        "Rsrc_um": float(Rsrc*1e6),
+        "Rdst_um": float(Rdst*1e6),
+        "scale": float(scale),
+    }
+
+    # Log what we did
+    print(f"[DABAM] Resample policy: {policy} | {note} "
+          f"| Rsrc={Rsrc*1e6:.1f} µm → Rdst={Rdst*1e6:.1f} µm | scale={scale:.3f}")
+    
+    print(
+        "[DABAM] Radii: "
+        f"Rsrc={Rsrc*1e6:.1f} µm (from DABAM WIDTH/LENGTH), "
+        f"Rdst={Rdst*1e6:.1f} µm (from A/2; A treated as DIAMETER), "
+        f"scale={scale:.3f}, rescale_dabam={rescale_flag}"
+    )
+
+    return Z_def_resampled
+
+
 
 
 
@@ -331,6 +770,9 @@ def get_index(elem, E, table_dir=None):
     
     if elem=='W':  
         return 2.85704482E-06 , 3.86332977E-05
+    
+    if elem=='Au':   #Gold (79)
+        return 3.55916109E-06 , 3.95017742E-05
     
     # Locate optical_constants folder relative to the file location of VIBE.py
     if table_dir is None:
@@ -1350,6 +1792,35 @@ def restore_even_shape_by_duplication(image, target_shape):
     
 
 
+
+def _sanitize_intensity_map(img: np.ndarray) -> np.ndarray:
+    """
+    Build a map with no negative values, no NaNs, no infinites, 
+    to be able to be used as an external map for laser and xray profiles
+    """
+    # Convert to float, collapse RGB if needed
+    arr = img.astype(float)
+    if arr.ndim == 3:  # e.g., RGB
+        # luminance or simple mean; choose what you prefer
+        arr = 0.2126*arr[...,0] + 0.7152*arr[...,1] + 0.0722*arr[...,2]
+
+    # Replace NaN/Inf
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Shift if negative baseline (e.g. high-pass artifacts)
+    minv = arr.min()
+    if minv < 0:
+        arr = arr - minv  # makes min 0
+
+    # Clip negative crumbs
+    arr = np.clip(arr, 0.0, None)
+
+    return arr
+
+
+
+
+
 def build_symmetric_kernel_from_particles(x_particles, y_particles, e_particles, Initial_energy_Geant4, N, propsize, nbins=401, smooth_sigma=4.0, plot_debug=False):
     
     """
@@ -1539,6 +2010,66 @@ def apply_air_scattering_and_debug_plot(F, params, propsize, N, plot_debug = Fal
     print(f"Air scattering + convolution took {elapsed_time/60:.2f} minutes.")
     
     return I_after_air
+
+
+
+# --------------------------------------------------------------------------
+# ----------- GAZJET: plasma density → phase and transmission maps ---------
+# --------------------------------------------------------------------------
+def build_gazjet_maps(el_dict, params, F=None):
+    """
+    Build the gas-jet phase map (and ~unity transmission).
+    Treats the plasma as n = 1 - δ (β≈0), so:
+        phase(x,y) = -k * δ(x,y) * L
+        trans(x,y) ≈ 1
+    """
+    # --- read gazjet params ---
+    dens_cc = float(el_dict.get("density", 1e18))            # [cm^-3], electron density
+    profile = str(el_dict.get("profile", "gaussian")).lower()
+    size_t  = float(el_dict.get("Size_transv", 500e-6))      # [m] (FWHM if gaussian, full width if rectangle)
+    size_l  = float(el_dict.get("Size_long",  500e-6))       # [m]
+    lam     = float(params.get("wavelength", 1e-10))         # [m] (default 1 Å)
+    k0      = 2.0*np.pi/lam
+
+    # --- grid (N, dx) from the current field if available ---
+    if F is not None:
+        N = int(getattr(F, "N"))
+        if hasattr(F, "ps"):
+            dx = float(F.ps)
+        elif hasattr(F, "grid_size") and hasattr(F, "N"):
+            dx = float(F.grid_size) / float(F.N)
+        else:
+            propsize = float(params["propsize"])
+            dx = propsize / N
+    else:
+        N = int(params["N"])
+        propsize = float(params["propsize"])
+        dx = propsize / N
+
+    # --- electron density in m^-3 ---
+    n_e = dens_cc * 1e6
+
+    # --- plasma index decrement: δ = n_e e² / (2 ε0 m_e ω²) ---
+    omega  = 2.0*np.pi*c/lam
+    delta0 = n_e * e**2 / (2.0*epsilon_0*m_e*omega**2)
+
+    # --- transverse profile ---
+    x = (np.arange(N) - N/2) * dx
+    X, Y = np.meshgrid(x, x, indexing="xy")
+
+    if profile == "gaussian":
+        sigma = size_t / (2.0*np.sqrt(2.0*np.log(2.0)))
+        density_map = np.exp(-(X**2 + Y**2) / (2.0*sigma**2))
+    else:  # rectangle
+        half = size_t / 2.0
+        density_map = np.where((np.abs(X) < half) & (np.abs(Y) < half), 1.0, 0.0)
+
+    # --- phase & transmission ---
+    delta_map = delta0 * density_map
+    phase_map = -k0 * delta_map * size_l         # [radians]
+    trans_map = np.ones_like(phase_map, float)   # ≈1 (β≈0)
+
+    return phase_map, trans_map
 
 
 
@@ -1804,7 +2335,7 @@ def handle_custom_CRL(F: Field,
 
     lens_material     = yamlval('lens_material', el_dict, 'Be')   # default material is set to Be
     beta, delta       = get_index(lens_material, E_eV)            # from Henke tables (https://henke.lbl.gov/optical_constants/getdb2.html)
-    print(delta,beta)
+    print(f"delta = {delta}, beta={beta}")
 
     phase_per_m       = -2.0 * np.pi * delta / wavelength_m       # radians of phase delay per meter
     absorption_factor = 4.0 * np.pi * beta / wavelength_m         # absorption exponent scale
@@ -1829,121 +2360,506 @@ def handle_custom_CRL(F: Field,
 
     lens_half_thickness = np.full_like(r, L / 2)                # default to max thickness (outside aperture)
     core_mask = r < A / 2 
-    print(core_mask)
     lens_half_thickness[core_mask] = (xm[core_mask]**2 + ym[core_mask]**2) / (2 * ROC) + t_wall / 2
     lens_thickness = 2 * lens_half_thickness
 
     # ────────────────────────────────────────────────
-    # 4. Apply transmission and phase maps ----------
+    # 4) Build aperture (optional) -------------------
     # ────────────────────────────────────────────────
+    if add_aperture == 1:
+        custom_ap = {'elem': 'Hf', 'thickness': 0.0001, 'shape': 'circle',
+                    'size': A, 'invert': 1}
+        Aperture_transmission, _ = doap(custom_ap, params)
+        F = MultIntensity(Aperture_transmission, F)  # aperture first
 
-    if add_aperture == 1 : # Add an aperture around the lens
-        custom_ap = {}
-        custom_ap['elem'] = 'Hf'
-        custom_ap['thickness'] = 0.0001
-        custom_ap['shape'] = 'circle'
-        custom_ap['size'] = A
-        custom_ap['invert'] = 1
-        Aperture_transmission,phasemap = doap(custom_ap,params)   # creating the transmission and phase map of the lens aperture
-        F = MultIntensity(Aperture_transmission,F)                # multiplying intensity of the field by the lens aperture
-    
-    transmission_map = np.exp(-nb_lenses * absorption_factor * lens_thickness)         # intensity attenuation
-    phase_map        = nb_lenses * phase_per_m * lens_thickness                        # phase delay [radians]
+    # ────────────────────────────────────────────────
+    # 5) Ideal transmission & phase ------------------
+    # ────────────────────────────────────────────────
+    transmission_map = np.exp(-nb_lenses * absorption_factor * lens_thickness)   # intensity attenuation
+    ideal_phase_map  = nb_lenses * phase_per_m * lens_thickness                  # phase delay [rad]
 
-    F = MultIntensity(transmission_map, F)  # apply intensity mask
-    F = MultPhase(phase_map, F)             # apply phase shift
+    # ────────────────────────────────────────────────
+    # 6) Defect phase (DABAM), then combine ----------
+    # ────────────────────────────────────────────────
+    total_phase_map = ideal_phase_map  # start with ideal
+    if int(el_dict.get("defects", 0)) == 1:
+        Z_def = build_dabam_defect_thickness_map(
+            el_dict=el_dict, params=params, xm=xm, ym=ym, A_m=A
+        )  # thickness delta [m] on (xm, ym) within aperture
+
+        defect_phase_map = nb_lenses * phase_per_m * Z_def  # convert to phase [rad]
+        total_phase_map  = ideal_phase_map + defect_phase_map
+
+    # ────────────────────────────────────────────────
+    # 7) Apply exactly once --------------------------
+    # ────────────────────────────────────────────────
+    F = MultIntensity(transmission_map, F)   # keep ideal absorption only
+    F = MultPhase(total_phase_map, F)        # ideal + defect phase
+
+    # ------------ PLOTS ------------
+    # ---- build filename stem -------
+    lens_name = el_dict.get("element_name") or el_dict.get("name") or el_dict.get("label") or "Lens"
+    sim_name  = params.get("filename") or params.get("sim_name") or params.get("name") or Path(projectdir).stem
+    stem = f"{sim_name}_{lens_name}"   # e.g. LP_610_CRL4a
+    save_dir = Path(projectdir)        # plotting functions save under /Lens_diags
 
 
-    # ───────────────────────────────────────────────────────────────
-    #  Combined 2-D & 1-D plots for Custom CRL  (+ aperture) ---------
-    # ───────────────────────────────────────────────────────────────
-    extent_um = [
-        Na[0] * 1e6, Na[-1] * 1e6,
-        Na[0] * 1e6, Na[-1] * 1e6
-    ]
 
-    center_idx = N // 2
-    x_um = Na * 1e6                      # horizontal axis in µm
-
-    thickness_1d     = lens_thickness[center_idx, :] * 1e6            # [µm]
-    transmission_1d  = transmission_map[center_idx, :]
-    phase_1d         = phase_map[center_idx, :]
-
-    # ---------- NEW: include aperture 1-D profile if requested -----
-    if add_aperture:
-        aperture_1d = Aperture_transmission[center_idx, :]
-
-    # ---------- make room for an extra column ----------------------
-    ncols = 4 if add_aperture else 3
-    fig, axes = plt.subplots(2, ncols, figsize=(5.2 * ncols, 7))      # scale width
-
-    # --- 2-D thickness map -----------------------------------------
-    im0 = axes[0, 0].imshow(nb_lenses * lens_thickness * 1e6,
-                            cmap='inferno', extent=extent_um, origin='lower')
-    axes[0, 0].set(title='2-D Thickness [µm]', xlabel='x [µm]', ylabel='y [µm]')
-    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046)
-
-    # --- 2-D transmission map --------------------------------------
-    im1 = axes[0, 1].imshow(transmission_map, cmap='viridis',
-                            extent=extent_um, origin='lower')
-    axes[0, 1].set(title='2-D Transmission', xlabel='x [µm]', ylabel='y [µm]')
-    plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
-
-    # --- 2-D phase (wrapped) ---------------------------------------
-    im2 = axes[0, 2].imshow(phase_map, cmap='twilight',
-                            extent=extent_um, origin='lower')
-    axes[0, 2].set(title='2-D Phase [rad]', xlabel='x [µm]', ylabel='y [µm]')
-    plt.colorbar(im2, ax=axes[0, 2], fraction=0.046)
-
-    # --- 2-D aperture map (only if requested) -----------------------
-    if add_aperture:
-        im3 = axes[0, 3].imshow(Aperture_transmission, cmap='gray',
-                                extent=extent_um, origin='lower')
-        axes[0, 3].set(title='2-D Aperture\n(transmission)',
-                    xlabel='x [µm]', ylabel='y [µm]')
-        plt.colorbar(im3, ax=axes[0, 3], fraction=0.046)
-
-    # ---------------------------------------------------------------
-    # ---------------- 1-D profiles (lower row) ---------------------
-    # ---------------------------------------------------------------
-    axes[1, 0].plot(x_um, nb_lenses * thickness_1d)
-    axes[1, 0].set(ylabel='Thickness [µm]', xlabel='x [µm]',
-                title='1-D Thickness (centre cut)')
-    axes[1, 0].grid()
-
-    axes[1, 1].plot(x_um, transmission_1d, color='green')
-    axes[1, 1].set(ylabel='Transmission', xlabel='x [µm]',
-                title='1-D Transmission (centre cut)')
-    axes[1, 1].grid()
-
-    axes[1, 2].plot(x_um, phase_1d, color='purple')
-    axes[1, 2].set(ylabel='Phase [rad]', xlabel='x [µm]',
-                title='1-D Phase (centre cut)')
-    axes[1, 2].grid()
-
-    # --- 1-D aperture cut (optional) -------------------------------
-    if add_aperture:
-        axes[1, 3].plot(x_um, aperture_1d, color='black')
-        axes[1, 3].set(ylabel='Aperture T', xlabel='x [µm]',
-                    title='1-D Aperture (centre cut)')
-        axes[1, 3].grid()
-
-    # ---------- optional zoom of 2-D maps --------------------------
-    lim_um = None          # set e.g. 500e-6 to zoom in
-    if lim_um is not None:
-        for ax in axes[0, :]:
-            ax.set_xlim(-lim_um * 1e6, lim_um * 1e6)
-            ax.set_ylim(-lim_um * 1e6, lim_um * 1e6)
-
-    plt.suptitle(
-        f"Custom CRL – {lens_material}, E = {E_eV:.1f} eV, λ = {wavelength_m*1e10:.2f} Å",
-        fontsize=14
+    # Image 1: ideal CRL (no defects)
+    plot_custom_crl_ideal(
+        projectdir=projectdir,
+        Na=Na,
+        nb_lenses=nb_lenses,
+        lens_thickness=lens_thickness,
+        transmission_map=transmission_map,
+        total_phase_map_ideal=ideal_phase_map,  # note: ideal only
+        add_aperture=add_aperture,
+        Aperture_transmission=(Aperture_transmission if add_aperture else None),
+        lens_material=lens_material,
+        E_eV=E_eV,
+        wavelength_m=wavelength_m,
+        filename_stem=stem,
+        save_dir=save_dir,
+        sim_name=sim_name,
+        lens_name=lens_name,
     )
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(projectdir / 'Lens_CRLCut_2D1D.png', dpi=300)
-    plt.show()
+
+
+    # Image 2: DABAM diagnostics (only if defects requested)
+    if int(el_dict.get("defects", 0)) == 1:
+        import darkfield.wavefront_fitting as wft
+
+        # Try to use the cached arrays produced by build_dabam_defect_thickness_map
+        X      = el_dict.get("dabam_X", None)
+        Y      = el_dict.get("dabam_Y", None)
+        Zraw   = el_dict.get("Z_raw_native", None)
+        Zfit_p = el_dict.get("Z_fit_panel_map", None)    # custom when Custom_zernike=on
+        Zres   = el_dict.get("Z_residues_native", None)
+
+        # If any are missing, fall back to recomputing (rare)
+        if X is None or Y is None or Zraw is None or Zfit_p is None or Zres is None:
+            # Parse index (same as before)
+            dabam_sel = el_dict.get("experimental_data", None)
+            idx = None
+            if isinstance(dabam_sel, (int, np.integer)):
+                idx = int(dabam_sel)
+            elif isinstance(dabam_sel, str):
+                s = dabam_sel.strip()
+                m = re.search(r"dabam2d-(\d+)$", s, flags=re.IGNORECASE)
+                if m:
+                    idx = int(m.group(1))
+                else:
+                    nums = re.findall(r"(\d+)", s)
+                    if nums:
+                        idx = int(nums[-1])
+
+            if idx is not None:
+                X, Y, Zraw, _ = load_dabam2d(idx)
+                nmodes    = int(el_dict.get("nmodes", 37))
+                startmode = int(el_dict.get("startmode", 1))
+
+                # Baseline LSQ fit (only used if we truly missed the cache)
+                Zcoeffs, Zfit_LSQ, Zres = wft.fit_zernike_circ(
+                    Zraw, nmodes=nmodes, startmode=startmode, rec_zern=True
+                )
+                Zres = -Zres
+
+                # Optional removal (for display)
+                remove_avg_flag = int(el_dict.get("remove_avg_profile", 0))
+                if remove_avg_flag == 1:
+                    I_thick_res, R = wft.average_azimuthal(Zres, X, Y)
+                    _, Zres = wft.remove_avg_profile(Zres, None, X, Y, I_thick_res, R, 'b')
+                el_dict["remove_avg_applied"] = remove_avg_flag
+
+                # The “fit” panel falls back to LSQ fit when we don’t have the cache
+                Zfit_p = Zfit_LSQ
+            else:
+                # No index → nothing to plot
+                return F
+
+        # Build label state for the bar plot
+        custom_active = (el_dict.get("Zfit_is_custom", 0) == 1)
+        custom_pairs  = list(el_dict.get("Custom_zernike", [])[1:]) if custom_active else []
+
+        # Zernike coeffs for the decomposition bars (LSQ of DABAM map)
+        Zcoeffs = el_dict.get("Z_coeffs_native", None)
+        # If somehow missing, fall back to the recompute path above (keeps behavior robust)
+        if Zcoeffs is None:
+            nmodes    = int(el_dict.get("nmodes", 37))
+            startmode = int(el_dict.get("startmode", 1))
+            Zcoeffs, _, _ = wft.fit_zernike_circ(Zraw, nmodes=nmodes, startmode=startmode, rec_zern=True)
+
+
+        plot_dabam_diagnostics(
+            projectdir=projectdir,
+            el_dict=el_dict,
+            X=X, Y=Y,
+            Z_raw=Zraw,
+            Zfit=Zfit_p,            # custom or LSQ (panel)
+            Zres=Zres,              # post-processed residues (panel)
+            Zcoeffs=np.asarray(Zcoeffs),
+            Zres_unproc=el_dict.get("Z_residues_native_unproc"),
+            custom_active=custom_active,
+            custom_pairs=custom_pairs,
+            nmodes=int(el_dict.get("nmodes", 37)),
+            startmode=int(el_dict.get("startmode", 1)),
+            filename_stem=stem,
+            save_dir=save_dir,
+            sim_name=sim_name,    
+            lens_name=lens_name      
+        )
+
+
 
     return F
+
+
+# ----------------- Zernike name map (Noll) -----------------
+# Noll → (n, m, canonical name)
+ZERN_NOLL = {
+    1:  (0, 0,  "Piston"),
+    2:  (1,-1,  "Tilt X (horizontal)"),
+    3:  (1, 1,  "Tilt Y (vertical)"),
+    4:  (2, 0,  "Defocus"),
+    5:  (2,-2,  "Primary astigmatism (oblique)"),
+    6:  (2, 2,  "Primary astigmatism (vertical)"),
+    7:  (3,-1,  "Primary coma X (horizontal)"),
+    8:  (3, 1,  "Primary coma Y (vertical)"),
+    9:  (3,-3,  "Trefoil (vertical)"),
+    10: (3, 3,  "Trefoil (oblique)"),
+    11: (4, 0,  "Primary spherical"),
+    12: (4,-2,  "Secondary astigmatism (vertical)"),
+    13: (4, 2,  "Secondary astigmatism (oblique)"),
+    14: (4,-4,  "Quadrafoil (vertical)"),
+    15: (4, 4,  "Quadrafoil (oblique)"),
+    16: (5,-1,  "Secondary coma X (horizontal)"),
+    17: (5, 1,  "Secondary coma Y (vertical)"),
+    18: (5,-3,  "Secondary trefoil (oblique)"),
+    19: (5, 3,  "Secondary trefoil (vertical)"),
+    20: (5,-5,  "Pentafoil (oblique)"),
+    21: (5, 5,  "Pentafoil (vertical)"),
+    22: (6, 0,  "Secondary spherical"),
+    23: (6,-2,  "Tertiary astigmatism (vertical)"),
+    24: (6, 2,  "Tertiary astigmatism (oblique)"),
+    25: (6,-4,  "Secondary quadrafoil (vertical)"),
+    26: (6, 4,  "Secondary quadrafoil (oblique)"),
+    27: (6,-6,  "Hexafoil (vertical)"),
+    28: (6, 6,  "Hexafoil (oblique)"),
+    29: (7,-1,  "Tertiary coma X (horizontal)"),
+    30: (7, 1,  "Tertiary coma Y (vertical)"),
+    31: (7,-3,  "Tertiary trefoil (oblique)"),
+    32: (7, 3,  "Tertiary trefoil (vertical)"),
+    33: (7,-5,  "Secondary pentafoil (oblique)"),
+    34: (7, 5,  "Secondary pentafoil (vertical)"),
+    35: (7,-7,  "Heptafoil (oblique)"),
+    36: (7, 7,  "Heptafoil (vertical)"),
+    37: (8, 0,  "Tertiary spherical"),
+}
+
+
+
+def _defect_type_label(v: int) -> str:
+    if v == 1: return "Zernike only"
+    if v == 2: return "Residues only"
+    if v == 3: return "Zernike + residues"
+    return f"Unknown ({v})"
+
+
+# ---------- Image 1: ideal CRL (no defects) ----------
+def plot_custom_crl_ideal(projectdir: Path,
+                          Na: np.ndarray,
+                          nb_lenses: float,
+                          lens_thickness: np.ndarray,
+                          transmission_map: np.ndarray,
+                          total_phase_map_ideal: np.ndarray,
+                          add_aperture: int,
+                          Aperture_transmission: np.ndarray | None,
+                          lens_material: str,
+                          E_eV: float,
+                          wavelength_m: float,
+                          filename_stem: str | None = None,
+                          save_dir: Path | None = None,
+                          sim_name: str | None = None,
+                          lens_name: str | None = None):
+    import matplotlib.pyplot as plt
+    N = lens_thickness.shape[0]
+    center_idx = N // 2
+    x_um = Na * 1e6
+    extent_um = [Na[0]*1e6, Na[-1]*1e6, Na[0]*1e6, Na[-1]*1e6]
+
+    thickness_1d     = lens_thickness[center_idx, :] * 1e6
+    transmission_1d  = transmission_map[center_idx, :]
+    phase_1d         = total_phase_map_ideal[center_idx, :]
+
+    ncols = 4 if add_aperture else 3
+    fig, axes = plt.subplots(2, ncols, figsize=(5.2*ncols, 7), dpi=120)
+
+    im0 = axes[0,0].imshow(nb_lenses * lens_thickness * 1e6, cmap='inferno',
+                           extent=extent_um, origin='lower')
+    axes[0,0].set(title='2-D Thickness [µm]', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im0, ax=axes[0,0], fraction=0.046)
+
+    im1 = axes[0,1].imshow(transmission_map, cmap='viridis',
+                           extent=extent_um, origin='lower')
+    axes[0,1].set(title='2-D Transmission', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im1, ax=axes[0,1], fraction=0.046)
+
+    im2 = axes[0,2].imshow(total_phase_map_ideal, cmap='twilight',
+                           extent=extent_um, origin='lower')
+    axes[0,2].set(title='2-D Phase (ideal) [rad]', xlabel='x [µm]', ylabel='y [µm]')
+    plt.colorbar(im2, ax=axes[0,2], fraction=0.046)
+
+    if add_aperture:
+        im3 = axes[0,3].imshow(Aperture_transmission, cmap='gray',
+                               extent=extent_um, origin='lower')
+        axes[0,3].set(title='2-D Aperture (T)', xlabel='x [µm]', ylabel='y [µm]')
+        plt.colorbar(im3, ax=axes[0,3], fraction=0.046)
+
+    axes[1,0].plot(x_um, nb_lenses * thickness_1d); axes[1,0].grid()
+    axes[1,0].set(ylabel='Thickness [µm]', xlabel='x [µm]', title='1-D Thickness (centre cut)')
+
+    axes[1,1].plot(x_um, transmission_1d, color='green'); axes[1,1].grid()
+    axes[1,1].set(ylabel='Transmission', xlabel='x [µm]', title='1-D Transmission (centre cut)')
+
+    axes[1,2].plot(x_um, phase_1d, color='purple'); axes[1,2].grid()
+    axes[1,2].set(ylabel='Phase [rad]', xlabel='x [µm]', title='1-D Phase (centre cut)')
+
+    if add_aperture:
+        axes[1,3].plot(x_um, Aperture_transmission[center_idx,:], color='black'); axes[1,3].grid()
+        axes[1,3].set(ylabel='Aperture T', xlabel='x [µm]', title='1-D Aperture (centre cut)')
+
+    # --- prepend simulation and lens names ---
+    sim_name  = sim_name  or Path(projectdir).stem
+    lens_name = lens_name or "Lens"
+
+    fig.suptitle(f"{sim_name}, {lens_name}, Custom CRL (ideal) — {lens_material}, E={E_eV:.0f} eV",
+                fontsize=13)
+
+    plt.tight_layout(rect=[0,0,1,0.95])
+
+    if save_dir is None:
+        save_dir = Path(projectdir)
+    save_dir = save_dir / "Lens_diags"
+
+    stem = (filename_stem or "Lens_CRL_cut")
+    out = save_dir / f"{stem}_ideal.png"
+    plt.savefig(out, dpi=300); plt.close(fig)
+
+
+# ---------- Image 2: DABAM diagnostics ----------
+
+
+
+def plot_dabam_diagnostics(projectdir: Path,
+                           el_dict: dict,
+                           X: np.ndarray, Y: np.ndarray,
+                           Z_raw: np.ndarray, Zfit: np.ndarray, Zres: np.ndarray,
+                           Zcoeffs: np.ndarray,
+                           Zres_unproc: Optional[np.ndarray] = None,
+                           custom_active: bool = False,
+                           custom_pairs: list[int | float] = None,
+                           nmodes: int = 37, startmode: int = 1,
+                           filename_stem: str | None = None,
+                           save_dir: Path | None = None,
+                           sim_name: str | None = None,
+                           lens_name: str | None = None):
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.patches import Circle
+
+
+    # what to show in the bar plot
+    if custom_active:
+        nolls = [int(custom_pairs[i]) for i in range(0, len(custom_pairs), 2)]
+        vals  = [float(custom_pairs[i]) for i in range(1, len(custom_pairs), 2)]
+        show_pairs = list(zip(nolls, vals))
+        title_bar = "Custom Zernike amplitudes"
+    else:
+        # display up to the 37th Zernike (or fewer if nmodes < 37)
+        j0 = startmode
+        jmax = min(j0 + 37, len(Zcoeffs) + 1)
+        show_pairs = [(j, Zcoeffs[j - 1]) for j in range(j0, jmax)]
+        title_bar = f"Zernike decomposition (up to mode {jmax - 1})"
+
+    # convert to µm for images
+    Zraw_um = Z_raw * 1e6
+    Zfit_um = Zfit * 1e6
+    Zres_um = Zres * 1e6
+    Zunproc_um = (Zres_unproc if Zres_unproc is not None else (Z_raw - Zfit)) * 1e6
+
+    XX, YY = np.meshgrid(X * 1e6, Y * 1e6)
+    extent_um = [X.min() * 1e6, X.max() * 1e6, Y.min() * 1e6, Y.max() * 1e6]
+
+    # optional interpolation map (resampled to same grid as used in simulation)
+    # NOTE: only available if we had to interpolate previously
+    Zinterp = None
+    if "Z_def_resampled" in el_dict:
+        Zinterp = el_dict["Z_def_resampled"] * 1e6  # µm
+
+    interp_extent = el_dict.get("Z_interp_extent_um", None)
+    resample_info = el_dict.get("Z_resample_info", None)
+
+    # build parameter summary
+    defects_flag = int(el_dict.get("defects", 0))
+    defect_type  = int(el_dict.get("defect_type", 3))
+    remove_avg   = int(el_dict.get("remove_avg_applied",
+                                el_dict.get("remove_avg_profile", 0)))
+    expdata      = el_dict.get("experimental_data", "n/a")
+
+    summary = (f"defects={defects_flag} | data={expdata} | "
+            f"type={_defect_type_label(defect_type)} | "
+            f"remove_avg_profile={remove_avg} | "
+            f"custom_zernike={'on' if custom_active else 'off'}")
+
+    # --- Figure layout: 2x2 + 1 wide bar chart, or 2x3 if interpolation map available
+    if Zinterp is not None:
+        fig = plt.figure(figsize=(16, 10), dpi=120)
+        gs = fig.add_gridspec(3, 4, height_ratios=[1, 1, 0.8], hspace=0.35, wspace=0.25)
+        ax0 = fig.add_subplot(gs[0, 0])
+        ax1 = fig.add_subplot(gs[0, 1])
+        ax2 = fig.add_subplot(gs[0, 2])
+        ax3 = fig.add_subplot(gs[0, 3])
+        ax4 = fig.add_subplot(gs[1, :])  # full-width residues (post-processed)
+        ax5 = fig.add_subplot(gs[2, :])  # full-width Zernike bars
+    else:
+        fig = plt.figure(figsize=(14, 9), dpi=120)
+        gs = fig.add_gridspec(3, 3, height_ratios=[1, 1, 0.8], hspace=0.35, wspace=0.25)
+        ax0 = fig.add_subplot(gs[0, 0])
+        ax1 = fig.add_subplot(gs[0, 1])
+        ax2 = fig.add_subplot(gs[0, 2])
+        ax3 = fig.add_subplot(gs[1, :])
+        ax4 = fig.add_subplot(gs[2, :])
+        ax5 = None
+
+    # ----------- PLOTS (using colormap='GnBu') --------------------
+    cmap = "GnBu"
+
+    im0 = ax0.imshow(Zraw_um, extent=extent_um, origin='lower', cmap=cmap)
+    ax0.set(title="Raw DABAM surface [µm]", xlabel="x [µm]", ylabel="y [µm]")
+    fig.colorbar(im0, ax=ax0, fraction=0.046)
+
+    im1 = ax1.imshow(Zfit_um, extent=extent_um, origin='lower', cmap=cmap)
+    ax1.set(title="Zernike fit [µm]", xlabel="x [µm]", ylabel="y [µm]")
+    fig.colorbar(im1, ax=ax1, fraction=0.046)
+
+    # --- CHANGED TITLE HERE ---
+    im2 = ax2.imshow(Zunproc_um, extent=extent_um, origin='lower', cmap=cmap,vmin=-5, vmax=5)
+    ax2.set(title="Residues (not processed) [µm]", xlabel="x [µm]", ylabel="y [µm]")
+    fig.colorbar(im2, ax=ax2, fraction=0.046)
+
+    # --- RESIDUES POST-PROCESSING ---
+    im3 = ax3.imshow(Zres_um, extent=extent_um, origin='lower', cmap=cmap,vmin=-5, vmax=5)
+    ax3.set(title="Residues (post processing) [µm]", xlabel="x [µm]", ylabel="y [µm]")
+    fig.colorbar(im3, ax=ax3, fraction=0.046)
+
+    # --- OPTIONAL INTERPOLATED MAP (new subplot) ---
+    if Zinterp is not None and ax5 is not None:
+        im4 = ax4.imshow(
+            Zinterp,
+            extent=(interp_extent if interp_extent is not None else extent_um),
+            origin='lower',
+            cmap=cmap
+        )
+        ax4.set(title="Resampled (interpolated) map [µm]", xlabel="x [µm]", ylabel="y [µm]")
+        fig.colorbar(im4, ax=ax4, fraction=0.046)
+
+        # === NEW: draw a circle for the lens DIAMETER (i.e., radius = A/2) ===
+        # Prefer the radius computed by the builder; otherwise derive from YAML A
+        Rdst_um = None
+        if resample_info is not None:
+            Rdst_um = resample_info.get("Rdst_um", None)
+        if Rdst_um is None:
+            A = el_dict.get("A", None)        # A is DIAMETER in your code
+            if A is not None:
+                Rdst_um = float(A * 1e6 / 2.0)
+        if Rdst_um is not None:
+            from matplotlib.patches import Circle
+            lens_circle = Circle((0.0, 0.0), Rdst_um,
+                                edgecolor='white', facecolor='none',
+                                linewidth=1.4, alpha=0.95,linestyle='--')
+            ax4.add_patch(lens_circle)
+            # optional: label
+            ax4.text(0.02, 0.02, f"Lens Ø ≈ {2*Rdst_um:.1f} µm",
+                    transform=ax4.transAxes, ha='left', va='bottom',
+                    fontsize=9, color='white',
+                    bbox=dict(boxstyle='round', facecolor='black', alpha=0.35, linewidth=0))
+
+        # annotate resampling policy & sizes (you already had this)
+        if resample_info is not None:
+            ax4.text(
+                0.02, 0.98,
+                (f"{resample_info.get('policy','')}\n"
+                f"Rsrc={resample_info.get('Rsrc_um',0):.1f} µm → "
+                f"Rdst={resample_info.get('Rdst_um',0):.1f} µm\n"
+                f"{resample_info.get('note','')}"),
+                transform=ax4.transAxes,
+                ha='left', va='top',
+                fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, linewidth=0)
+            )
+
+        bar_ax = ax5
+    else:
+        # <<< add this so bar_ax is always defined >>>
+        bar_ax = ax4
+
+
+
+    # ----------- BAR CHART (Zernike decomposition) ----------------
+    js   = [j for j, _ in show_pairs]
+    vals = [v * 1e6 for _, v in show_pairs]  # µm
+
+    labels = []
+    for j in js:
+        nm = ZERN_NOLL.get(j)  # -> (n, m, name) or None
+        if nm is None:
+            labels.append(f"$Z_{{{j}}}$")
+        else:
+            n, m, name = nm
+            # two lines: top "Z_j  Z_n^m" (MathText), bottom the name
+            labels.append(f"$Z_{{{j}}}$ $Z_{{{n}}}^{{{m}}}$\n{name}")
+
+
+    # --- vertical lines behind bars ---
+    for x in range(len(js)):
+        bar_ax.axvline(x, color='gray', linestyle='-', linewidth=0.5, alpha=0.2, zorder=0)
+
+    # --- bar plot (zorder>0 so it stays on top of the grid lines) ---
+    bar_ax.bar(range(len(js)), vals, color="#2c7fb8", zorder=2)
+
+    bar_ax.bar(range(len(js)), vals, color="#2c7fb8")
+    bar_ax.set_xticks(range(len(js)), labels, rotation=90, ha='center', va='top')
+    bar_ax.set_ylabel("Thickness defect [µm]")
+    bar_ax.set_title(title_bar)
+    bar_ax.tick_params(axis='x', labelsize=8)
+
+
+    # ----------- TITLE & SAVE ------------------------
+    lens_name = (lens_name
+                 or el_dict.get("element_name")
+                 or el_dict.get("name")
+                 or el_dict.get("label")
+                 or "Lens")
+    sim_name  = (sim_name
+                 or el_dict.get("sim_name")
+                 or el_dict.get("filename")
+                 or el_dict.get("simulation_name")
+                 or Path(projectdir).stem)
+
+    fig.suptitle(f"{sim_name}, {lens_name}, {summary}", fontsize=13)
+
+    fig.subplots_adjust(bottom=0.25, top=0.93, hspace=0.5)
+
+    if save_dir is None:
+        save_dir = Path(projectdir)
+    save_dir = save_dir / "Lens_diags"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = (filename_stem or "Lens_DABAM")
+    out = save_dir / f"{stem}_defects.png"
+    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 
@@ -2051,6 +2967,10 @@ def _save_center_crop_debug(I, params, fname_tag="debug", title_tag="", outdir=N
         cmap = None
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+
+    use_log = bool(params.get("simulation", {}).get("figs_log", 0))
+    clim    = params.get("simulation", {}).get("flow_plot_clim", [None, None])
+
     if title_tag:
         fig.suptitle(title_tag, y=0.98)
 
@@ -2064,19 +2984,48 @@ def _save_center_crop_debug(I, params, fname_tag="debug", title_tag="", outdir=N
     c0 = plt.colorbar(im0, ax=axes[0, 0], shrink=0.9); c0.set_label("photons / m²")
 
     # 2D log
-    Ipos = Iw[Iw > 0]
-    if Ipos.size:
-        vmin = max(np.percentile(Ipos, 0.1), Iw.max() * 1e-12)  # robust floor
+    A = np.asarray(Iw, float)
+    if use_log:
+        pos = A[np.isfinite(A) & (A > 0)]
+        if pos.size:
+            vmin = float(pos.min())
+            vmax = float(pos.max())
+            # Apply YAML clim if provided
+            if clim:
+                lo, hi = clim
+                if lo is not None:
+                    vmin = max(vmin, float(lo))
+                if hi is not None:
+                    vmax = min(vmax, float(hi))
+            # Enforce strictly positive + ordered bounds
+            vmin = max(vmin, np.finfo(float).tiny)
+            if not np.isfinite(vmax) or vmax <= vmin:
+                vmax = np.nextafter(vmin, np.inf)
+            im1 = axes[0, 1].imshow(
+                np.where(A > 0, A, np.nan),
+                origin="lower", extent=ext, interpolation="nearest",
+                aspect="equal", cmap=(cmap or "viridis"),
+                norm=LogNorm(vmin=vmin, vmax=vmax)
+            )
+            axes[0, 1].set_title("2D (log) — photons/m²")
+        else:
+            # no positive data → linear fallback
+            im1 = axes[0, 1].imshow(
+                A, origin="lower", extent=ext, interpolation="nearest",
+                aspect="equal", cmap=(cmap or "viridis")
+            )
+            axes[0, 1].set_title("2D (linear fallback) — photons/m²")
     else:
-        vmin = 1e-30
-    vmax = max(Iw.max(), vmin * 1.01)
-    im1 = axes[0, 1].imshow(
-        Iw, origin="lower", extent=ext, interpolation="nearest",
-        aspect="equal", cmap=(cmap or "viridis"), norm=LogNorm(vmin=vmin, vmax=vmax)
-    )
-    axes[0, 1].set_title("2D (log) — photons/m²")
+        # YAML requested linear plotting
+        im1 = axes[0, 1].imshow(
+            A, origin="lower", extent=ext, interpolation="nearest",
+            aspect="equal", cmap=(cmap or "viridis")
+        )
+        axes[0, 1].set_title("2D (linear) — photons/m²")
+
     axes[0, 1].set_xlabel("x [µm]"); axes[0, 1].set_ylabel("y [µm]")
     c1 = plt.colorbar(im1, ax=axes[0, 1], shrink=0.9); c1.set_label("photons / m²")
+
 
     # 1D central cuts
     axes[1, 0].plot(x_um, profile)
@@ -2095,6 +3044,547 @@ def _save_center_crop_debug(I, params, fname_tag="debug", title_tag="", outdir=N
     fig.savefig(outfile, dpi=300)
     plt.close(fig)
     print(f"[TCC] Saved {title_tag} 2D map + central cut to {outfile}")
+
+
+
+def F_of(chi: float, chi0: float, rho: float, n_nodes: int = 160) -> float:
+    """
+    Universal overflow-safe evaluator for the pulse-shape correction integrand.
+    Analytically cancels the large exponentials; integrates a benign kernel:
+        ∫ e^{-K^2} |S|^2 dK = ∫ e^{-2*rho^2*K^2} | w(i(z+chi)) + w(i(-z+chi)) |^2 dK
+    with z = rho*K - i*chi0.  Works for any (chi, chi0, rho).
+    """
+    K, W = hermgauss(n_nodes)
+
+    # Skip extreme tails where exp(-2*rho^2*K^2) underflows (no contribution).
+    # 2*rho^2*K^2 ≳ 700 → exp(-...) ~ 5e-305 (below double precision relevance)
+    mask = (2.0*(rho*rho)*(K*K) < 700.0)
+    if not np.any(mask):
+        return 0.0
+
+    K = K[mask]; W = W[mask]
+    z = rho*K - 1j*chi0
+
+    a = 1j*( z + chi)   # i(z+chi)
+    b = 1j*(-z + chi)   # i(-z+chi)
+    Wsum = wofz(a) + wofz(b)
+
+    integrand = np.exp(-2.0*(rho*rho)*(K*K)) * (Wsum.real**2 + Wsum.imag**2)
+    integrand = np.nan_to_num(integrand, nan=0.0, posinf=0.0, neginf=0.0)
+
+    I = np.sum(W * integrand)
+    pref = np.sqrt((1.0 + 2.0*rho*rho)/3.0) * (chi*chi)
+    return pref * I
+
+
+# --------- Building the 2D map of IR laser at focus -------
+def build_ir_focus_map(IR_spatial_params: list,
+                       F,
+                       params: dict,
+                       P_peak: float,
+                       x_off: float = 0.0,
+                       y_off: float = 0.0):
+    """
+    Build IR focus intensity map on the simulation grid, from either a
+    Gaussian descriptor or an external image.
+
+    IR_spatial_params (params['IR_2Dmap']):
+        ["gaussian" | "external", norm_policy, path, calib_um_per_px]
+        - gaussian: ignores path/calib, uses params['IR_FWHM_gaussian'].
+        - external: 'norm_policy' controls scaling. Currently supported:
+            * "match_integral" → ∫I dA = P_peak (spatial PDF × P_peak)
+              using provided calibration (μm/px) or the image extent
+              inferred from calib.
+    Returns:
+        I_W_cm2 : (N,N) array, intensity at focus in W/cm^2
+        x       : (N,) array, physical x-grid [m]
+        fwhm_diam_used : float, effective FWHM diameter [m]
+    """
+    mode = str(IR_spatial_params[0]).lower() if IR_spatial_params else "gaussian"
+
+    # Target grid (meters), centered
+    x = np.linspace(-F.grid_size/2, F.grid_size/2, F.N)
+    Xg, Yg = np.meshgrid(x, x, indexing="xy")
+
+    def _fwhm_diameter(A: np.ndarray, x_coords: np.ndarray, y_coords: np.ndarray) -> float:
+        """
+        Estimate effective FWHM *diameter* of a spot in A on a rect. grid (x_coords, y_coords),
+        using a peak-centered radial profile with a 1D fallback.
+        Returns diameter in the same units as x_coords/y_coords.
+        """
+        A = np.asarray(A, dtype=np.float64)
+        if A.size == 0 or not np.isfinite(A).any() or A.max() <= 0:
+            return float("nan")
+
+        # Peak location and center coordinates
+        iy, ix = np.unravel_index(np.argmax(A), A.shape)
+        xc, yc = float(x_coords[ix]), float(y_coords[iy])
+
+        # Radial profile (vectorized binning)
+        Xg, Yg = np.meshgrid(x_coords, y_coords, indexing="xy")
+        r = np.hypot(Xg - xc, Yg - yc)
+        In = A / (A.max() + 1e-300)
+
+        n_bins = 200
+        rb = np.linspace(0.0, float(r.max()), n_bins + 1)
+        bins = np.digitize(r.ravel(), rb) - 1
+        bins = np.clip(bins, 0, n_bins - 1)
+        sums = np.bincount(bins, weights=In.ravel(), minlength=n_bins)
+        cnts = np.bincount(bins, minlength=n_bins)
+        prof = np.divide(sums, cnts, out=np.zeros_like(sums), where=cnts > 0)
+        rmid = 0.5 * (rb[:-1] + rb[1:])
+
+        hit = np.where((prof[:-1] >= 0.5) & (prof[1:] < 0.5))[0]
+        if hit.size:
+            k = int(hit[0])
+            y1, y2 = prof[k], prof[k+1]
+            x1, x2 = rmid[k], rmid[k+1]
+            r_half = x1 + (0.5 - y1) * (x2 - x1) / (y2 - y1 + 1e-300)
+            if np.isfinite(r_half) and r_half > 0:
+                return float(2.0 * r_half)
+
+        # Fallback: 1D FWHM along row/col through the peak → geometric mean
+        def _fwhm_1d(y, coord):
+            y = np.asarray(y, float)
+            if y.max() <= 0: return float("nan")
+            y = y / (y.max() + 1e-300)
+            i0 = int(np.argmax(y)); half = 0.5
+            L = np.where(y[:i0] < half)[0]
+            if L.size:
+                kL = L[-1]
+                xL = coord[kL] + (half - y[kL]) * (coord[kL+1] - coord[kL]) / (y[kL+1] - y[kL] + 1e-300)
+            else:
+                xL = coord[0]
+            R = np.where(y[i0:] < half)[0]
+            if R.size:
+                kR = i0 + R[0] - 1
+                xR = coord[kR] + (half - y[kR]) * (coord[kR+1] - coord[kR]) / (y[kR+1] - y[kR] + 1e-300)
+            else:
+                xR = coord[-1]
+            return float(xR - xL)
+
+        fx = _fwhm_1d(A[iy, :], x_coords)
+        fy = _fwhm_1d(A[:, ix], y_coords)
+        if np.isfinite(fx) and np.isfinite(fy) and fx > 0 and fy > 0:
+            return float(np.sqrt(fx * fy))
+        return float("nan")
+
+    # ----------------- GAUSSIAN -----------------
+    if mode == "gaussian":
+        FWHM_diam = float(params.get("IR_FWHM_gaussian", 1.3e-6))
+
+        I_W_cm2, _ = gaussian_spot_map(
+            F.grid_size, F.N,
+            fwhm_diameter=FWHM_diam,
+            P_peak=P_peak,
+            return_grid=True,
+            debug=True,
+            debug_outdir=Path(params["projectdir"]) / "VB_figures",
+            sim_label=params.get("filename", "")
+        )
+        # optional offsets via resampling (kept as before)
+        if abs(x_off) > 0.0 or abs(y_off) > 0.0:
+            interp = RegularGridInterpolator((x, x), I_W_cm2, bounds_error=False, fill_value=0.0)
+            pts = np.column_stack([(Yg - y_off).ravel(), (Xg - x_off).ravel()])
+            I_W_cm2 = interp(pts).reshape(F.N, F.N)
+
+        return I_W_cm2, x, float(FWHM_diam)
+
+    # ----------------- EXTERNAL IMAGE -----------------
+    # IR_spatial_params = ["external", norm_policy, path, calib_um_per_px]
+    norm_policy    = str(IR_spatial_params[1]).lower() if len(IR_spatial_params) > 1 and IR_spatial_params[1] else "match_integral"
+    path_img       = IR_spatial_params[2] if len(IR_spatial_params) > 2 else None
+    calib_um_per_px = IR_spatial_params[3] if len(IR_spatial_params) > 3 else None
+
+    if not path_img:
+        raise ValueError("IR_2Dmap 'external' requires a valid image path at IR_2Dmap[2].")
+
+    # --- Load grayscale ---
+    try:
+        from imageio.v2 import imread
+        img = imread(path_img)
+    except Exception:
+        from PIL import Image
+        img = np.array(Image.open(path_img).convert("L"))
+
+    # --- Sanitize external image (no NaN/Inf/negatives) ---
+    img = _sanitize_intensity_map(img)
+
+    Ny, Nx = img.shape
+
+    # --- Pixel size from calibration (μm/px) OR scale-to-Gaussian-FWHM when == 0 ---
+    if calib_um_per_px is None:
+        raise ValueError("External IR map: provide calibration (IR_2Dmap[3] in μm/px) or 0 to scale to IR_FWHM_gaussian.")
+
+    calib_val = float(calib_um_per_px)
+    if calib_val > 0.0:
+        dpx = calib_val * 1e-6  # [m/px]
+        dx_m = dy_m = dpx
+    else:
+        # Measure FWHM on the *raw image* in pixel units and choose dpx to match IR_FWHM_gaussian
+        fwhm_target_m = float(params.get("IR_FWHM_gaussian", 1.3e-6))
+        # pixel coordinate axes (units: px)
+        xs_px = np.arange(Nx, dtype=float)
+        ys_px = np.arange(Ny, dtype=float)
+        fwhm_img_px = _fwhm_diameter(img, xs_px, ys_px)  # [px]
+        if not np.isfinite(fwhm_img_px) or fwhm_img_px <= 0:
+            raise ValueError("Could not measure FWHM on the external IR image to scale-to-Gaussian.")
+        dpx = fwhm_target_m / fwhm_img_px  # [m/px] so that FWHM_px * dpx = target
+        dx_m = dy_m = dpx
+        print(f"[IR-map] calib=0 → scale-to-Gaussian-FWHM: FWHM_img≈{fwhm_img_px:.2f} px → "
+            f"dpx={dpx*1e6:.3f} µm/px (target {fwhm_target_m*1e6:.3f} µm)")
+
+    # Build source physical axes for interpolation (meters), centered on image center
+    xs = (np.arange(Nx) - (Nx - 1)/2.0) * dx_m
+    ys = (np.arange(Ny) - (Ny - 1)/2.0) * dy_m
+    
+    # Interpolate onto simulation grid with requested offsets
+    interp = RegularGridInterpolator((ys, xs), img, bounds_error=False, fill_value=0.0, method="linear")
+    pts = np.column_stack([(Yg - y_off).ravel(), (Xg - x_off).ravel()])
+    img_resampled = interp(pts).reshape(F.N, F.N)
+
+    # ---- Recenter peak to (x_off, y_off) (kept as you fixed) ----
+    center_peak = bool(params.get("IR_center_peak", True))
+    if center_peak:
+        iy, ix = np.unravel_index(np.argmax(img_resampled), img_resampled.shape)
+        x_peak, y_peak = float(x[ix]), float(x[iy])
+        dx_shift, dy_shift = (x_peak - x_off), (y_peak - y_off)
+        pts = np.column_stack([(Yg - y_off + dy_shift).ravel(),
+                               (Xg - x_off + dx_shift).ravel()])
+        img_resampled = interp(pts).reshape(F.N, F.N)
+
+    # ---- Normalization policy ----
+    if norm_policy == "match_integral":
+        # Spatial density s(x,y) with ∫ s dA = 1 using ORIGINAL pixel area
+        total_counts = img.sum()
+        if total_counts <= 0:
+            raise ValueError(f"External IR map '{path_img}' has zero/negative sum.")
+        px_area = dx_m * dy_m
+        s_density = img_resampled / (total_counts * px_area)   # [1/m^2]
+        I_W_m2  = P_peak * s_density
+        I_W_cm2 = I_W_m2 / 1e4
+
+    elif norm_policy == "match_peak":
+        # Peak-match to the Gaussian spot with IR_FWHM_gaussian
+        fwhm_gauss = float(params.get("IR_FWHM_gaussian", 1.3e-6))
+        w0 = fwhm_gauss / np.sqrt(2.0*np.log(2.0))              # [m]
+        I_target_peak_Wcm2 = (P_peak * (2.0 / (np.pi*w0*w0))) / 1e4  # [W/cm^2]
+
+        vmax = float(np.max(img_resampled))
+        if vmax <= 0.0 or not np.isfinite(vmax):
+            raise ValueError("External IR map peak is zero/invalid after resampling; cannot match peak.")
+
+        shape_peak_norm = img_resampled / vmax                  # unitless, peak=1
+        I_W_cm2 = I_target_peak_Wcm2 * shape_peak_norm          # enforce desired peak
+
+        # (optional sanity print)
+        dx_sim = F.grid_size / F.N
+        P_on_grid = np.nansum(I_W_cm2) * dx_sim * dx_sim * 1e4  # back to W
+        print(f"[IR-map] match_peak: I_peak={I_target_peak_Wcm2:.3e} W/cm²; "
+            f"∫I dA on grid = {P_on_grid:.3e} W (P_peak={P_peak:.3e} W)")
+
+
+    else:
+        # Future options land here (e.g., "match_fwhm", "match_energy_and_peak" via compromise, etc.)
+        raise NotImplementedError(f"Unknown IR external norm_policy: '{norm_policy}'")
+
+
+    # --- Effective FWHM diameter (on the simulation grid) ---
+    try:
+        fwhm_diam_used = _fwhm_diameter(I_W_cm2, x, x)
+        if not np.isfinite(fwhm_diam_used) or fwhm_diam_used <= 0:
+            # Fallback: 1/4 of the smallest full span covered by mapping
+            full_span_x = Nx * dx_m
+            full_span_y = Ny * dy_m
+            fwhm_diam_used = float(0.25 * min(full_span_x, full_span_y))
+    except Exception:
+        full_span_x = Nx * dx_m
+        full_span_y = Ny * dy_m
+        fwhm_diam_used = float(0.25 * min(full_span_x, full_span_y))
+
+
+    # ---------- Debug figure (2D + lineout) ----------
+    try:
+        dbg_dir = Path(params["projectdir"]) / "VB_figures"
+        dbg_dir.mkdir(parents=True, exist_ok=True)
+
+        # Axes in microns for display
+        x_um = x * 1e6
+        extent_um = [x_um[0], x_um[-1], x_um[0], x_um[-1]]
+
+        # Find peak (after resampling + offsets)
+        iy, ix = np.unravel_index(np.argmax(I_W_cm2), I_W_cm2.shape)
+        x_peak, y_peak = x[ix], x[iy]
+
+        # Prepare figure
+        fig, (ax2d, ax1d) = plt.subplots(1, 2, figsize=(10, 4.2))
+
+        # --- 2D map
+        im = ax2d.imshow(I_W_cm2, extent=extent_um, origin="lower")
+        ax2d.set_xlabel("x [µm]"); ax2d.set_ylabel("y [µm]")
+        ax2d.set_title("External IR focus: I [W/cm²]")
+        cb = plt.colorbar(im, ax=ax2d); cb.set_label("W/cm²")
+
+        # Mark requested offsets and measured peak
+        ax2d.plot([x_off*1e6], [y_off*1e6], 'wo', ms=5, mec='k', mew=0.8, label="requested offset")
+        ax2d.plot([x_peak*1e6], [y_peak*1e6], 'rx', ms=6, mew=1.2, label="peak")
+        ax2d.legend(loc="upper right", frameon=True)
+
+        # Zoom to a ±4 µm window around the **peak** (robust for off-center beams)
+        lim_um = 4.0
+        ax2d.set_xlim(x_peak*1e6 - lim_um, x_peak*1e6 + lim_um)
+        ax2d.set_ylim(y_peak*1e6 - lim_um, y_peak*1e6 + lim_um)
+
+        # --- 1D lineout through the peak row (horizontal profile)
+        x_line = x.copy()
+        I_line = I_W_cm2[iy, :]  # horizontal line at the peak y
+        Imax   = float(I_line.max())
+        half   = 0.5 * Imax
+
+        # Locate half-maximum crossings around the peak index
+        i0 = int(np.argmax(I_line))
+
+        # Left crossing
+        il = np.where(I_line[:i0] < half)[0]
+        if il.size:
+            kL  = il[-1]
+            xL  = x_line[kL] + (half - I_line[kL]) * (x_line[kL+1] - x_line[kL]) / (I_line[kL+1] - I_line[kL] + 1e-300)
+        else:
+            xL  = x_line[0]
+
+        # Right crossing
+        ir = np.where(I_line[i0:] < half)[0]
+        if ir.size:
+            kR  = i0 + ir[0] - 1
+            xR  = x_line[kR] + (half - I_line[kR]) * (x_line[kR+1] - x_line[kR]) / (I_line[kR+1] - I_line[kR] + 1e-300)
+        else:
+            xR  = x_line[-1]
+
+        fwhm_meas = (xR - xL)  # [m]
+
+        # Plot the lineout
+        ax1d.plot(x_line*1e6, I_line, lw=1.6)
+        ax1d.axhline(half, color='gray', ls='--', lw=1)
+        ax1d.axvline(xL*1e6, color='gray', ls=':', lw=1)
+        ax1d.axvline(xR*1e6, color='gray', ls=':', lw=1)
+        ax1d.set_xlabel("x [µm]"); ax1d.set_ylabel("I [W/cm²]")
+        ax1d.set_title("Lineout through peak (y = y_peak)")
+        ax1d.grid(True)
+
+        # Make the x-limits match the 2D zoom window (centered on peak)
+        ax1d.set_xlim(x_peak*1e6 - lim_um, x_peak*1e6 + lim_um)
+
+        # Annotate
+        ax1d.text(
+            0.05, 0.95,
+            f"Peak = {Imax:.3e} W/cm²\n"
+            f"FWHM (meas) = {fwhm_meas*1e6:.3f} µm",
+            transform=ax1d.transAxes, ha='left', va='top'
+        )
+
+        # Title + save
+        label = params.get("filename", "run")
+        fig.suptitle(f"{label} — External IR spot debug", y=0.98)
+        fig.tight_layout()
+        out_png = dbg_dir / f"{label}_IRmap_resampled.png"
+        plt.savefig(out_png, dpi=300)
+        plt.close(fig)
+
+        # Console checks (use the original pixel-area normalization)
+        print(f"[IR-map] Peak intensity: {Imax:.3e} W/cm²")
+        print(f"[IR-map] FWHM (meas along x@peak) = {fwhm_meas*1e6:.3f} µm")
+        print(f"[IR-map] Saved: {out_png}")
+
+    except Exception as e:
+        # keep silent in batch but don’t block the run
+        print(f"[IR-map] Debug plotting failed: {e}")
+
+
+    return I_W_cm2, x, fwhm_diam_used
+
+
+
+
+
+def _fwhm_diameter_generic(A: np.ndarray, x_coords: np.ndarray, y_coords: np.ndarray) -> float:
+    """
+    Effective FWHM *diameter* of a spot in A on rect. grid (x_coords, y_coords).
+    Peak-centered radial profile with 1D fallback. Returns same units as coords.
+    """
+    A = np.asarray(A, dtype=np.float64)
+    if A.size == 0 or not np.isfinite(A).any() or A.max() <= 0:
+        return float("nan")
+    iy, ix = np.unravel_index(np.argmax(A), A.shape)
+    xc, yc = float(x_coords[ix]), float(y_coords[iy])
+
+    Xg, Yg = np.meshgrid(x_coords, y_coords, indexing="xy")
+    r = np.hypot(Xg - xc, Yg - yc)
+    In = A / (A.max() + 1e-300)
+
+    n_bins = 200
+    rb = np.linspace(0.0, float(r.max()), n_bins + 1)
+    bins = np.digitize(r.ravel(), rb) - 1
+    bins = np.clip(bins, 0, n_bins - 1)
+    sums = np.bincount(bins, weights=In.ravel(), minlength=n_bins)
+    cnts = np.bincount(bins, minlength=n_bins)
+    prof = np.divide(sums, cnts, out=np.zeros_like(sums), where=cnts > 0)
+    rmid = 0.5 * (rb[:-1] + rb[1:])
+
+    hit = np.where((prof[:-1] >= 0.5) & (prof[1:] < 0.5))[0]
+    if hit.size:
+        k = int(hit[0])
+        y1, y2 = prof[k], prof[k+1]
+        x1, x2 = rmid[k], rmid[k+1]
+        r_half = x1 + (0.5 - y1) * (x2 - x1) / (y2 - y1 + 1e-300)
+        if np.isfinite(r_half) and r_half > 0:
+            return float(2.0 * r_half)
+
+    # Fallback: geometric mean of horizontal / vertical FWHM through the peak
+    def _fwhm_1d(y, coord):
+        y = np.asarray(y, float)
+        if y.max() <= 0: return float("nan")
+        y = y / (y.max() + 1e-300)
+        i0 = int(np.argmax(y)); half = 0.5
+        L = np.where(y[:i0] < half)[0]
+        if L.size:
+            kL = L[-1]
+            xL = coord[kL] + (half - y[kL]) * (coord[kL+1] - coord[kL]) / (y[kL+1] - y[kL] + 1e-300)
+        else:
+            xL = coord[0]
+        R = np.where(y[i0:] < half)[0]
+        if R.size:
+            kR = i0 + R[0] - 1
+            xR = coord[kR] + (half - y[kR]) * (coord[kR+1] - coord[kR]) / (y[kR+1] - y[kR] + 1e-300)
+        else:
+            xR = coord[-1]
+        return float(xR - xL)
+
+    fx = _fwhm_1d(A[iy, :], x_coords)
+    fy = _fwhm_1d(A[:, ix], y_coords)
+    if np.isfinite(fx) and np.isfinite(fy) and fx > 0 and fy > 0:
+        return float(np.sqrt(fx * fy))
+    return float("nan")
+
+
+
+
+def build_external_shaper_mask(el_dict: dict, F, params: dict) -> np.ndarray:
+    """
+    Build a transmission mask (0..1) from an external image to shape the
+    *intensity* after the mask to match the image (up to a global factor).
+
+    YAML (under a 'type: aperture' element):
+      shape: external_map
+      path: "/abs/path/to/Xray_initial_beam.png"
+      calibration: <μm/px>      # if 0, scale the image to FWHM='size'
+      size: <FWHM_diameter_m>   # used only when calibration == 0
+      center: "barycenter" | "max" | "no"
+      center_sigma_px: 2.0       # (only for center="max") smoothing in px
+      x_offset_m: 0.0            # desired final beam center (meters)
+      y_offset_m: 0.0
+      # or in microns:
+      # x_offset_um: 0.0
+      # y_offset_um: 0.0
+    """
+    path = el_dict.get("path", None)
+    calib_um_per_px = el_dict.get("calibration", None)
+    if not path:
+        raise ValueError("beam_shaper.external_map needs a 'path' to an image.")
+    if calib_um_per_px is None:
+        raise ValueError("beam_shaper.external_map needs 'calibration' (μm/px), or 0 to use 'size' as FWHM.")
+
+    # -- load + sanitize (make grayscale, drop NaN/Inf, clamp negatives)
+    try:
+        from imageio.v2 import imread
+        img = imread(path)
+    except Exception:
+        from PIL import Image
+        img = np.array(Image.open(path))  # color or L, both fine
+
+    img = _sanitize_intensity_map(img)    # ← your sanitizer
+    Ny, Nx = img.shape
+
+    # -- pixel scale
+    calib_val = float(calib_um_per_px)
+    if calib_val > 0.0:
+        dpx = calib_val * 1e-6  # [m/px]
+    else:
+        target_fwhm = float(el_dict.get("size", 0.0))
+        if target_fwhm <= 0:
+            raise ValueError("With calibration=0 you must provide a positive 'size' (FWHM diameter in meters).")
+        xs_px = np.arange(Nx, dtype=float)
+        ys_px = np.arange(Ny, dtype=float)
+        fwhm_px = _fwhm_diameter_generic(img, xs_px, ys_px)
+        if not np.isfinite(fwhm_px) or fwhm_px <= 0:
+            raise ValueError("Failed to measure FWHM on external map for calibration=0 scaling.")
+        dpx = target_fwhm / fwhm_px
+        print(f"[beam_shaper] calib=0 → scale-to-FWHM: img≈{fwhm_px:.2f}px → dpx={dpx*1e6:.3f} µm/px (target {target_fwhm*1e6:.3f} µm)")
+
+    # -- source axes (meters) centered on image center
+    xs = (np.arange(Nx) - (Nx - 1) / 2.0) * dpx
+    ys = (np.arange(Ny) - (Ny - 1) / 2.0) * dpx
+
+    # -- destination (simulation) grid
+    dx = F.siz / F.N
+    x  = (np.arange(F.N) - F.N / 2) * dx
+    Xg, Yg = np.meshgrid(x, x, indexing="xy")
+
+    # -------- centering & offsets ---------------------------------
+    center_mode = str(el_dict.get("center", "no")).lower()
+
+    # desired final center (default 0)
+    x_off_m = float(el_dict.get("x_offset_m", 0.0))
+    y_off_m = float(el_dict.get("y_offset_m", 0.0))
+    if "x_offset_um" in el_dict: x_off_m = float(el_dict["x_offset_um"]) * 1e-6
+    if "y_offset_um" in el_dict: y_off_m = float(el_dict["y_offset_um"]) * 1e-6
+
+    center_x = 0.0
+    center_y = 0.0
+
+    if center_mode == "barycenter":
+        Xs, Ys = np.meshgrid(xs, ys, indexing="xy")
+        w = img
+        tot = float(w.sum())
+        if tot > 0.0:
+            center_x = float((w * Xs).sum() / tot)
+            center_y = float((w * Ys).sum() / tot)
+    elif center_mode == "max":
+        try:
+            from scipy.ndimage import gaussian_filter
+            sigma_px = float(el_dict.get("center_sigma_px", 2.0))
+            G = gaussian_filter(img, sigma=sigma_px) if sigma_px > 0 else img
+        except Exception:
+            G = img
+        iy, ix = np.unravel_index(np.argmax(G), G.shape)
+        center_x = float(xs[ix]); center_y = float(ys[iy])
+    elif center_mode in ("no", "none", "false", "0"):
+        pass
+    else:
+        raise ValueError("beam_shaper.center must be 'barycenter', 'max' or 'no'.")
+
+    # Shift needed in source coordinates so that final center = (x_off_m, y_off_m)
+    dx_center = x_off_m - center_x
+    dy_center = y_off_m - center_y
+    # --------------------------------------------------------------
+
+    # -- resample the *shifted* map to the simulation grid
+    interp = RegularGridInterpolator((ys, xs), img, bounds_error=False, fill_value=0.0)
+    T = interp(np.column_stack([(Yg - dy_center).ravel(), (Xg - dx_center).ravel()])).reshape(F.N, F.N)
+    T = np.maximum(T, 0.0)
+
+    # -- build intensity transmission so that (M * I_in) ∝ T (shape match)
+    I_in = Intensity(0, F)
+    eps = 1e-300
+    M0 = T / (I_in + eps)                 # desired ratio in intensity units
+    mmax = float(np.nanmax(M0))
+    if not np.isfinite(mmax) or mmax <= 0:
+        return np.zeros_like(I_in)
+    M = np.clip(M0 / mmax, 0.0, 1.0)      # cap so it's a *transmission* (≤1)
+
+    return M
+
+
+
 
 
 def apply_element(bundle: FieldBundle,
@@ -2317,34 +3807,58 @@ def apply_element(bundle: FieldBundle,
             F=MultPhase(phaseshiftmap,F)
             bundle.fields[ch_name] = F
 
+        # ############# ELEMENT : GAZ JET (pure phase) ###############
+        if el_type.lower() == "gazjet":
+            if ch_name == "main":
+                # Build plasma phase (ignore transmission ~ 1 for these densities)
+                phase_map, _ = build_gazjet_maps(el_dict, params, F)
+
+                # Apply phase to the main channel and persist
+                F = MultPhase(phase_map, F)
+                bundle.fields[ch_name] = F
+                
+            else:
+                # Skip Gazjet for non-main channels
+
+                pass
+
+
         ############# ELEMENT : PURE APERTURE ###########
         if 'aperture' in el_type:
-            if len(el_dict)==0:
-                do_nothing = 1
-            num = yamlval('num',el_dict,1)
-            merged = 1
-            if merged:
-                bt = np.zeros((N,N))+1.
-                ph = np.zeros((N,N))
-                for i in np.arange(num):
-                    tmap,phasemap = doap(el_dict,params)
-                    bt = bt*tmap
-                    ph+=phasemap
-                if yamlval('do_intensity',el_dict,1):
-                    F = MultIntensity(bt,F)
-                    bundle.fields[ch_name] = F
-                if yamlval('do_phaseshift',el_dict,1):
-                    F = MultPhase(ph,F)
-                    bundle.fields[ch_name] = F
+            # -----External_map shaping at the beam entrance ---
+            if el_dict.get('shape', '') == 'external_map':
+                M = build_external_shaper_mask(el_dict, F, params)
+                F = MultIntensity(M, F)
+                bundle.fields[ch_name] = F
             else:
-                for i in np.arange(num):
-                    tmap,phasemap=doap(el_dict,params)
+                # --- Build a regular aperture ---
+                if len(el_dict)==0:
+                    do_nothing = 1
+                num = yamlval('num',el_dict,1)
+                merged = 1
+                if merged:
+                    bt = np.zeros((N,N))+1.
+                    ph = np.zeros((N,N))
+                    for i in np.arange(num):
+                        tmap,phasemap = doap(el_dict,params)
+                        bt = bt*tmap
+                        ph+=phasemap
                     if yamlval('do_intensity',el_dict,1):
-                        F = MultIntensity(tmap,F)
+                        F = MultIntensity(bt,F)
                         bundle.fields[ch_name] = F
                     if yamlval('do_phaseshift',el_dict,1):
-                        F = MultPhase(phasemap,F)
+                        F = MultPhase(ph,F)
                         bundle.fields[ch_name] = F
+                else:
+                    for i in np.arange(num):
+                        tmap,phasemap=doap(el_dict,params)
+                        if yamlval('do_intensity',el_dict,1):
+                            F = MultIntensity(tmap,F)
+                            bundle.fields[ch_name] = F
+                        if yamlval('do_phaseshift',el_dict,1):
+                            F = MultPhase(phasemap,F)
+                            bundle.fields[ch_name] = F
+
 
         ############## Air Scattering ##########
         
@@ -2377,18 +3891,17 @@ def apply_element(bundle: FieldBundle,
         alpha_cst = e**2 / (4 * np.pi * epsilon_0 * hbar * c)
 
         # X and Y offset of the laser 
-        x_off = yamlval('laser_x_offset_m', el_dict, 0.0)    # x offset of the laser at TCC [m]
-        y_off = yamlval('laser_y_offset_m', el_dict, 0.0)    # y offset of the laser at TCC [m]
+        x_off = float(params.get("IR_x_offset_m", 0.0))      # x offset of the laser at TCC [m]
+        y_off = float(params.get("IR_y_offset_m", 0.0))    # y offset of the laser at TCC [m]
 
         # Calculate the intensity of IR laser :
-        f_IR = 0.1 # focal lenght of the final parabolla in m
-        D_IR = 0.1 # diameter of the final parabolla in m
-        wavelength_IR = 800e-9 # Wavelenght of the IR laser, in m
+        wavelength_IR = float(params.get("IR_wavelength", 800e-9))            # [m]
         phi_VB = np.pi / 4 #45 degrees angle between the IR and X beams.
+        phi_VB       = np.deg2rad(float(params.get("phi_VB_deg", 45.0))) #Polarisation angle between the IR laser and the Xray beam [rad]
 
         # Define E_pulse (OR) P_peak
-        tau_FWHM = 30e-15 # Laser FWHM duration in second
-        E_pulse  = 4.8  # Joules
+        tau_FWHM = float(params.get("IR_FWHM_duration", 30e-15))             # Pump IR Laser FWHM duration in second
+        E_pulse  = float(params.get("IR_Energy_J", 4.8))                      # [J]
         #P_peak_direct = 200e12 # Peak power of the laser, in Watt
 
         P_peak = peak_power(E=E_pulse, tau_FWHM=tau_FWHM) # In [Watt]
@@ -2398,27 +3911,53 @@ def apply_element(bundle: FieldBundle,
         #I_W_cm2, x = airy_disk_map(F.grid_size, F.N, P_peak, lam=wavelength_IR, f=f_IR, D=D_IR,return_grid=True)
 
         # 2) ------- Option 2 = Gaussian --------
-        FWHM_diam = 1.3e-6    # target FWHM diameter [m]
-        #I_W_cm2, x = gaussian_spot_map(F.grid_size, F.N, fwhm_diameter=FWHM_diam,
-        #                            P_peak=P_peak, return_grid=True, debug=True,
-        #                            sim_label=params.get('filename'))
-    
-        I_W_cm2, x = gaussian_spot_map(
-            F.grid_size, F.N,
-            fwhm_diameter=FWHM_diam,
+        IR_spatial_params = yamlval("IR_2Dmap", params, ["gaussian", "match_integral", None, None])
+
+        I_W_cm2, x, FWHM_diam = build_ir_focus_map(
+            IR_spatial_params=IR_spatial_params,
+            F=F,
+            params=params,
             P_peak=P_peak,
-            return_grid=True,
-            debug=True,
-            debug_outdir=Path(params["projectdir"]) / "VB_figures",
-            sim_label=params.get("filename", "")
+            x_off=x_off,
+            y_off=y_off
         )
 
-        # ---------------------------------------
-        tau_Felix = tau_FWHM * np.sqrt(2 / np.log(2)) #The tau defined by Felix : tau_Felix = sqrt(2/ln(2)) * tau_FWHM
 
-        prefactor = (c * tau_Felix / wavelength) * (alpha_cst / 90) * np.sqrt(np.pi / 2)
+        #I_W_cm2, x = gaussian_spot_map(
+        #    F.grid_size, F.N,
+        #    fwhm_diameter=FWHM_diam,
+        #    P_peak=P_peak,
+        #    return_grid=True,
+        #    debug=True,
+        #    debug_outdir=Path(params["projectdir"]) / "VB_figures",
+        #    sim_label=params.get("filename", "")
+        #)
+
+        # ---------------- Pulse Shape factor ---------------
+        # The following factor is made to account for: 1) The finite pump Rayleigh length. 2) The probe and pump finite durations. 3) The time offset of the pump/probe focus
+
+        T_FWHM = float(params.get("X_FWHM_duration", 25e-15))               # probe duration FWHM [s]
+        t0  = float(params.get("Timing_jitter", 0.0))               # [s] pump–probe focus timing offset
+
+        tau_Felix = tau_FWHM * np.sqrt(2 / np.log(2)) #The tau defined by Felix : tau_Felix = sqrt(2/ln(2)) * tau_FWHM
+        w0 = FWHM_diam / (np.sqrt(2 * np.log(2)))       # 1/e^2 waist radius [m]
+        zR  = np.pi * w0**2 / wavelength_IR             # Rayleigh length [m]
+                      
+        T   = T_FWHM * 2 / (np.sqrt(2 * np.log(2)))          # probe duration (1/e^2) [s]
+        tau = tau_FWHM * 2 / (np.sqrt(2 * np.log(2)))        # pump duration (1/e^2) [s]
+
+        chi   = 4.0 * zR / (np.sqrt((c*T)**2 + (c*tau)**2 / 2.0))
+        chi0  = 2.0 * (c*t0) / (np.sqrt((c*T)**2 + (c*tau)**2 / 2.0))
+        rho   = T / tau
+
+        Pulse_shape_factor  = (np.sqrt(3.0*np.pi) / 4.0) * F_of(chi, chi0, rho, n_nodes=180) # Pulse shaped factor (unitless)
+        print(f"Pulse shape factor = {Pulse_shape_factor:.12g}")
+        print(f"t0={t0}, FWHM_diam={FWHM_diam}, T_FWHM={T_FWHM}, tau_FWHM = {tau_FWHM}")
+        # --------------- Creating the masks -------------------
+
+        prefactor = (c * tau_Felix / wavelength) * (alpha_cst / 90) * np.sqrt(np.pi / 2) * np.sqrt(Pulse_shape_factor)
         VB_mask_parr = (I_W_cm2 / I_cr) * prefactor * (11 - 3 * np.cos(2 * phi_VB))  #mask of the intensity of IR laser at TCC (unitless)
-        VB_mask_perp = (I_W_cm2 / I_cr) * prefactor * ( 3 * np.sin(2 * phi_VB)) #mask of the intensity of IR laser at TCC (unitless)
+        VB_mask_perp = (I_W_cm2 / I_cr) * prefactor * ( 3 * np.sin(2 * phi_VB))      #mask of the intensity of IR laser at TCC (unitless)
 
         print(f"Speed of light = {c} m/s")
         print(f"max Intensity IR = {np.max(I_W_cm2)} W/cm^2")
@@ -2705,7 +4244,6 @@ def main_VIBE(params,elements):
         plot_phase    = yamlval('plot_phase', params, 0)
         logg          = yamlval('figs_log', params, 1)
 
-        print(f"Zoom factor = {ZoomFactor}")
         
         if auto_flow and 'flow' in el_name:         # Decide once whether this element is an auto-flow plane
             fi       = int(el_name.split('_')[1])   # e.g. flow_005_…
@@ -2738,7 +4276,7 @@ def main_VIBE(params,elements):
             if ch_name == "main" and ((beam_shaper_index is not None and ei == beam_shaper_index) or (beam_shaper_index is None and ei == 0)):
 
                 photons_tot = params.get('photons_total')
-                tau         = params.get('pulse_duration')
+                tau         = params.get('X_FWHM_duration')
 
                 if photons_tot:
                     params['scale_phot'] = photons_tot / np.nansum(I_ch) / ((propsize / N)**2) # Factor to scale the map to photons/m^2. Unit is [photons / m^2]
@@ -2789,15 +4327,6 @@ def main_VIBE(params,elements):
             # -----------------------------------------------------------------------
             # --- DEBUG FIGURE @ TCC: 2D main field in photons/m² over ±4 µm (x,y) --
             # -----------------------------------------------------------------------
-
-            # --- DEBUG FIGURES @ TCC ---
-            #if el_name == "TCC":
-            #    if ch_name == "main":
-            #        _save_center_crop_debug(I_ch, params, fname_tag="Xray",    title_tag="Main @ TCC")
-            #    elif ch_name == "VB_perp":
-            #        _save_center_crop_debug(I_ch, params, fname_tag="VB_perp", title_tag="VB_perp @ TCC")
-
-            # --- DEBUG FIGURES @ TCC (only Xray & VB_perp to VB_figures) ---
             if el_name == "TCC" and ch_name in ("main", "VB_perp"):
                 vb_dir = Path(params["projectdir"]) / "VB_figures"
                 sim    = params.get("filename", "")
@@ -2809,8 +4338,6 @@ def main_VIBE(params,elements):
                     title_tag=f"{sim} — {title}",
                     outdir=vb_dir,
                 )
-
-
             # ----------------------------------------------------------------------
             # -------------------------- end DEBUG FIGURE --------------------------
             # ----------------------------------------------------------------------
@@ -3074,6 +4601,12 @@ def main_VIBE(params,elements):
     # -----------------------------------------------------------------
     # 8. flow-plot for every channel that may exist
     # -----------------------------------------------------------------
+    
+    flow_list = params.get("flow", [])
+    if not (isinstance(flow_list, (list, tuple)) and len(flow_list) > 0):
+        print("[FLOW] Disabled (no windows provided).")
+        return params, trans, figs
+        
     # ─── Define horizontal range for flow plot: xl = [start, end] ───
     beam_shaper_pos = None
     detector_pos     = None
@@ -3114,7 +4647,7 @@ def main_VIBE(params,elements):
         except AssertionError:
             # channel wasn’t recorded – simply skip
             pass
-    # -----------------------------------------------------------------
+
 
     return params, trans, figs
 
@@ -3206,9 +4739,6 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
     numfigs = sum(1 for k in pic if k.endswith(f"_{channel}"))
 
     assert numfigs > 0, f"No flow slices found for channel '{channel}'"
-
-    #print(f"[FLOW] Found {numfigs} flow slices for channel '{channel}'")
-
 
     # ─── Filter relevant flow slices ────────────────────────────────
     ffigs = []
@@ -3434,39 +4964,37 @@ def flow_plot(project_dir, file, cl=[1e-11,50], gyax_def=[-1000,1000,1], vertica
 
     plt.tight_layout()
 
-    # ─── Total photon count near beam shaper ───
+    # ─── Total photon count at beam shaper plane ───
     elements_dict = res[0]
     beam_shaper_pos = None
     if "beam_shaper" in elements_dict:
         if yamlval("in", elements_dict["beam_shaper"], 1):
             beam_shaper_pos = elements_dict["beam_shaper"]["position"]
 
-    if beam_shaper_pos is not None:
-        idx = np.argmin(np.abs(zax - beam_shaper_pos))
-        idx += 10  # margin to be clearly downstream
+    # Perform only for MAIN channel
+    if (beam_shaper_pos is not None) and (channel == "main") and (len(ffigs) > 0):
+        # find the closest slice to the beam shaper position
+        idx = int(np.argmin(np.abs(zax - beam_shaper_pos)))
+        idx = max(0, min(idx, len(ffigs) - 1))  # clamp to valid range
 
-        # Select raw image or interpolated lineout
-        if vertical_type in ("center", "vert-center"):
-            fig_key = ffigs[idx]
-            raw_img, _, propsize, _ = pic[fig_key]
-            img_N = raw_img.shape[0]
-            dx = dy = propsize / img_N
-            img_scaled = {
-                "photons": raw_img * scale_ph,
-                "Wcm2": raw_img * scale_Wcm,
-                "relative": raw_img
-            }.get(unit_sel, raw_img)
-            total_photons = np.nansum(img_scaled) * dx * dy
-        else:
-            # for 1D vertical lineouts
-            dy = (gyax[1] - gyax[0]) * 1e-6  # m
-            Lx = propsizes[idx]             # m
-            total_photons = np.nansum(fixedfall[idx]) * dy * Lx
+        fig_key = ffigs[idx]
+        print(f"\n✅ Beam shaper at z = {beam_shaper_pos:.2f} m → closest slice z = {zax[idx]:.2f} m")
 
-        # Print results if in photon mode
+        # get the data from that slice
+        raw_img, _, propsize, _ = pic[fig_key]
+        img_N = raw_img.shape[0]
+        dx = dy = propsize / img_N
+
+        img_scaled = {
+            "photons": raw_img * scale_ph,
+            "Wcm2": raw_img * scale_Wcm,
+            "relative": raw_img
+        }.get(unit_sel, raw_img)
+
+        total_photons = np.nansum(img_scaled) * dx * dy
         photons_target = params.get("photons_total", None)
+
         if unit_sel == "photons":
-            print(f"\n✅ Beam shaper at z = {beam_shaper_pos:.2f} m → closest slice z = {zax[idx]:.2f} m")
             print(f"→ Total photons from flow = {total_photons:.3e}")
             if photons_target:
                 rel_err = (total_photons - photons_target) / photons_target
@@ -3549,4 +5077,50 @@ def flow_savefig(I,ffdir,fi,propsize,label,position,flow_plot_crange=1e-5):
     plt.ylim(-fffx,fffx)
     plt.xlim(-fff,fff)
     plt.savefig(ff_fn)
-    #plt.close(f2)
+
+
+
+
+
+def run_from_yaml(yaml_path: str, N: int):
+    cfg      = load_cfg(yaml_path)
+    elements = elements_from_cfg(cfg)
+    yamlname = Path(yaml_path).stem
+
+    # Reproduce your cluster/local fallback behavior
+    cluster_path = Path("/home/yu79deg/darkfield_p5438")
+    local_path   = Path("/Users/aimematheron/Dropbox/AimeDF")
+    basepath     = cluster_path if cluster_path.exists() else local_path
+    projectdir   = str(basepath / "Aime")
+
+    input_params = build_input_params(cfg, N=N, projectdir=projectdir, filename=yamlname)
+
+    # ---- Run the engine exactly as before ----
+    out_params, trans, figs = main_VIBE(input_params, elements)
+
+    # ---- Optional: keep Launch's extra res pickle (cfg + params) ----
+    try:
+        pickles_dir = Path(projectdir) / "pickles"
+        pickles_dir.mkdir(parents=True, exist_ok=True)
+        mu.dumpPickle([cfg, out_params], str(pickles_dir / f"{yamlname}_res"))
+    except Exception as e:
+        print(f"[warn] Could not write extra res pickle: {e}")
+
+    print("Simulation finished.")
+    return out_params, trans, figs
+
+
+
+
+if __name__ == "__main__":
+    _select_backend()
+    warnings.filterwarnings("ignore")
+
+    ap = argparse.ArgumentParser(description="Run VIBE directly from a YAML.")
+    ap.add_argument("--yaml", required=True, help="Path to YAML config")
+    ap.add_argument("-N", type=int, default=1000, help="Number of simulation points")
+    args = ap.parse_args()
+
+    run_from_yaml(args.yaml, args.N)
+
+

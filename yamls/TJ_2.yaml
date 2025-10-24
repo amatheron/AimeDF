@@ -1,0 +1,154 @@
+start:
+  position: -11.0
+  type: image
+  
+
+beam_shaper:
+  position: -10
+  type: aperture
+  shape: gaussian
+  invert: 0
+  power: 4
+  size: 0.00065
+
+CRL3:
+  in: 1
+  position: -9
+  type: Custom_CRL
+  ROC: 200.0e-6   # Radius of curvature in [m]
+  L: 0.9e-3      # Total mechanical lens thickness [m]
+  A: 850.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 1. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+
+
+O1:
+  in: 1
+  position: -7.4
+  elem: W
+  shape: realwire
+  size: 0.00022211
+  type: aperture
+  
+CRL4a:
+  in: 1
+  position: -1.215
+  type: Custom_CRL
+  ROC: 125.0e-6   # Radius of curvature in [m]
+  L: 0.5e-3      # Total mechanical lens thickness [m]
+  A: 475.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 3. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+  
+
+TCC:
+  type: imager
+  position: 0
+  VB_signal: 0
+
+A1-:
+  position: 2.1
+  type: imager
+  
+A1:
+  in: 1
+  elem: W
+  r: 0.0002
+  shape: wireslit
+  size: 31.0e-06
+  position: 2.234
+  type: aperture
+
+CRL4b:
+  in: 1
+  position: 2.434
+  type: Custom_CRL
+  ROC: 125.0e-6   # Radius of curvature in [m]
+  L: 0.5e-3      # Total mechanical lens thickness [m]
+  A: 475.0e-6    # Geometric aperture radius [m]
+  #focal_lenght_stack: 2.0
+  nb_lenses: 4. # Number of lenses
+  lens_material: diamond
+  add_aperture: 1
+  
+  
+Det:
+  position: 7.5
+  type: imager
+  roi: 13
+  roi2: 75
+
+  
+Xbeam:
+  offset: 0
+  size: 0.002
+  photonenergy: 8766
+  photons_total: 2e11          # photons in the pulse (at START plane)
+  X_FWHM_duration: 25e-15      # Xray FWHM duration [s].
+
+
+IRLaser:
+  phi_VB_deg: 45       # Polarisation angle between IRLaser and Xray beam
+  IR_Energy_J: 4.8
+  IR_FWHM_duration: 30e-15
+  IR_wavelength: 800e-9
+  IR_FWHM_gaussian: 1.3e-6 # FWHM diameter in the case of a Gaussian laser pulse
+  IR_x_offset_m: 0
+  IR_y_offset_m: 0
+  Timing_jitter: 0.0      # Timing mismatch at focus between the pump and the probe, in [s].
+  IR_2Dmap:
+  - "external"        # Choose : "external" or "gaussian". Choose whether using an external 2D image or a gaussian map for the IR focus.
+  - "match_peak"    # Choose : "match_integral" or "match_peak" to match the integral of the signal (such that the IR_Energy_J is matched) or the peak value of intensity for a  gaussian calculation.
+  - "/home/yu79deg/darkfield_p5438/src/darkfield/IR_focus.png"       # Path of the external IR focus image
+  - 0        #0.037 calibration in μm/pixel. If equal to = 0, the code will match the FWHM of external map laser to be equal to IR_FWHM_gaussian.
+
+
+simulation:
+  intensity_units: photons   # or 'relative'
+  beamdiv: 0.0001
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  Zoom_global: 4 # Global zoom of all the simulation
+  smooth: 0
+  subfigure_size_px: 0
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - beam_shaper
+  - CRL3
+  - O1
+  - CRL4a  
+  - CRL4b
+  - TCC
+  - Det
+  - flow
+  figs_log: 1
+  flow:
+  - -9.5
+  - 7.5
+  - 0.03
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -200.0
+  - 200.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50

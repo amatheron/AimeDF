@@ -8,6 +8,7 @@ simulation_template = '''#!/bin/bash
 #SBATCH --mem={mem}
 #SBATCH --output=/home/yu79deg/darkfield_p5438/bash/bash_output/{jobname}.log
 #SBATCH --error=/home/yu79deg/darkfield_p5438/bash/bash_output/{jobname}.err
+#SBATCH --chdir=/home/yu79deg/darkfield_p5438   # ensure a known working dir
 
 source ~/.bashrc  #  not automatically read by slurm
 micromamba activate darkfield  # activate here the anaconda environment you want to use
@@ -21,7 +22,7 @@ DEFAULT_SBATCH_PARAMS = {
     'n_cpus': 24,
     'time': '24:00:00',
     'mem': '100GB',
-    'script_path': '/home/yu79deg/darkfield_p5438/src/darkfield/Launch_VIBE.py'
+    'script_path': '/home/yu79deg/darkfield_p5438/src/darkfield/VIBE.py'
 }
 
 
@@ -47,7 +48,13 @@ def write_bash(path, N, upd_params={}, bash_name=None):
     if 'yaml' not in upd_params:
         raise ValueError("You must specify 'yaml' in upd_params.")
         
-    bash_params['script_kwargs'] = f'-N {N} --yaml {upd_params["yaml"]}'
+    #bash_params['script_kwargs'] = f'-N {N} --yaml {upd_params["yaml"]}'
+
+    yaml_arg = upd_params['yaml']
+    if not os.path.isabs(yaml_arg):
+        # YAMLs live in /home/.../yamls
+        yaml_arg = os.path.join('/home/yu79deg/darkfield_p5438/yamls', yaml_arg)
+    bash_params['script_kwargs'] = f'-N {N} --yaml {yaml_arg}'
 
     yaml_file = upd_params['yaml']
     bash_params['jobname'] = os.path.splitext(os.path.basename(yaml_file))[0] #extracting the job name from the name of the yaml file.

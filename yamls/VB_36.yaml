@@ -1,0 +1,112 @@
+start:
+  position: -1.5
+  type: image
+  
+beam_shaper:
+  position: -1.002
+  type: aperture
+  shape: external_map
+  path: "/home/yu79deg/darkfield_p5438/src/darkfield/Xray_initial_beam.png"
+  center: "max"       # Can be "barycenter", "max", "no" (the latter being , not centered)
+  center_sigma_px: 2.0       # only used for center="max"
+  calibration: 0.3           # If >0, calibration in μm/pixel. If=0 then the beam FWHM is taken to be equal to the "size" value of this section.
+  size: 0.000140             # Ignored when calibration > 0
+  x_offset_um: 0.0           # Offset of the center, in um
+  y_offset_um: 0.0           # Offset of the center, in um
+
+O1:
+  in: 1
+  position: -1.001
+  shape: rectangle
+  size: 0.000028
+  sizevert: 0.001
+  type: aperture
+
+  
+CRL4a:
+  position: -1.0
+  type: lens
+  in: 1
+  f: 1.0
+  size: 0.001
+  seiboth: false
+  celestre: false
+  scatterer: false
+  
+TCC:
+  type: imager
+  position: 0
+  VB_signal: 1
+  
+Det:
+  position: 1.0
+  type: imager
+  roi: 13
+  roi2: 75
+  
+Xbeam:
+  offset: 0
+  size: 0.002
+  photonenergy: 8766
+  photons_total: 2e11          # photons in the pulse (at START plane)
+  X_FWHM_duration: 25e-15      # Xray FWHM duration [s].
+  
+IRLaser:
+  phi_VB_deg: 45       # Polarisation angle between IRLaser and Xray beam
+  IR_Energy_J: 4.8
+  IR_FWHM_duration: 30e-15
+  IR_wavelength: 800e-9
+  IR_FWHM_gaussian: 1.0e-6 # FWHM diameter in the case of a Gaussian laser pulse
+  IR_x_offset_m: 0
+  IR_y_offset_m: 0
+  Timing_jitter: 0.0      # Timing mismatch at focus between the pump and the probe, in [s].
+  IR_2Dmap:
+  - "external"        # Choose : "external" or "gaussian". Choose whether using an external 2D image or a gaussian map for the IR focus.
+  - "match_peak"    # Choose : "match_integral" or "match_peak" to match the integral of the signal (such that the IR_Energy_J is matched) or the peak value of intensity for a  gaussian calculation.
+  - "/home/yu79deg/darkfield_p5438/src/darkfield/IR_focus.png"       # Path of the external IR focus image
+  - 0        #0.037 calibration in μm/pixel. If equal to = 0, the code will match the FWHM of external map laser to be equal to IR_FWHM_gaussian.
+
+
+simulation:
+  intensity_units: photons   # or 'relative'
+  beamdiv: 0.0
+  do_positive: true
+  focus_test: false
+  focus_test_zoom: 150
+  name: as_filename
+  pptype: N
+  project: Aime
+  propsize: 0.002
+  Zoom_global: 6 # Global zoom of all the simulation
+  smooth: 0
+  subfigure_size_px: 0
+  version: 1
+  intensity_ylim:
+  - 1.0e-10
+  - 2.0
+  profiles_xlim:
+  - 0
+  - 200
+  figs_to_save:
+  - beam_shaper
+  - O1
+  - CRL4a
+  - TCC
+  - Det
+  - flow
+  figs_log: 1
+  edge_damping:
+  - 0.25
+  edge_damping_shape: circular
+  flow:
+  - -0.5
+  - 0.3
+  - 0.6
+  flow_auto_save: 0
+  flow_plot_gyax:
+  - -200.0
+  - 200.0
+  - 1.0
+  flow_plot_clim:
+  - 1e-11
+  - 50
