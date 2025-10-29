@@ -207,138 +207,179 @@ def load_dabam2d(index: int, dabam_root: str | Path = None):
     return X, Y, Z, meta
 
 
+
+
+
+
 def build_dabam_defect_thickness_map(el_dict, params, xm, ym, A_m):
     """
-    Returns a thickness *delta* [m] on the simulation grid (same shape as xm/ym)
-    to be ADDED to the ideal CRL thickness. Behavior controlled by YAML keys:
-
-      defects: 1/0
-      experimental_data: "dabam2d-0021" or int index 21
-      defect_type: 1 (Zernike fit only) | 2 (residues only) | 3 (fit + residues)
-      remove_avg_profile: 1/0
-      Custom_zernike: [flag, noll_1, val_1_m, noll_2, val_2_m, ...]
-      nmodes: int (default 37)
-      startmode: int (default 1)
-
-    Notes:
-      • The DABAM map is rescaled to fill a circle of radius A/2 (aperture).
-      • The result is masked outside the aperture.
+    Interpolate each DABAM map to the simulation grid (xm, ym), sum them,
+    then compute Zernike fit/residues ONLY on the lens disk (ROI).
+    Return the final thickness map on the full grid (zeros outside the lens).
     """
     import re
     import numpy as np
+    from darkfield.VIBE import load_dabam2d
     from scipy.interpolate import RegularGridInterpolator
     import darkfield.wavefront_fitting as wft  # local module
 
-    # ---- YAML options -----------------------------------------------
-    defects_flag   = int(el_dict.get("defects", 0))
-    expdata_raw    = el_dict.get("experimental_data", None)
-    defect_type    = int(el_dict.get("defect_type", 3))
-    remove_avg     = int(el_dict.get("remove_avg_profile", 0))
-    custom_list    = el_dict.get("Custom_zernike", [])
-    nmodes         = int(el_dict.get("nmodes", 37))
-    startmode      = int(el_dict.get("startmode", 1))
+    print("[DABAM][v2] list-capable builder is active")
 
-    # try to grab a human-friendly element name
-    elem_name = el_dict.get("element_name", el_dict.get("name", el_dict.get("label", "Custom_CRL")))
+    # ---------- YAML / inputs ----------
+    defects_flag = int(el_dict.get("defects", 0))
+    expdata_raw  = el_dict.get("experimental_data", None)
+    defect_type  = int(el_dict.get("defect_type", 3))
+    remove_avg   = int(el_dict.get("remove_avg_profile", 0))
+    nmodes       = int(el_dict.get("nmodes", 37))
+    startmode    = int(el_dict.get("startmode", 1))
+    nb_lenses    = int(el_dict.get("nb_lenses", 1))
+    rescale_flag = int(el_dict.get("rescale_dabam", 1))
 
-    custom_active  = (
-        isinstance(custom_list, (list, tuple)) and len(custom_list) >= 1 and int(custom_list[0]) == 1
-    )
+    # Normalize list of datasets
+    if isinstance(expdata_raw, (list, tuple)):
+        exp_list = list(expdata_raw)
+    elif isinstance(expdata_raw, (str, int, np.integer)):
+        exp_list = [expdata_raw]
+    else:
+        exp_list = []
 
-    # Parse DABAM index (prefer 'dabam2d-XXXX', else last digits in the string)
-    idx = None
-    if isinstance(expdata_raw, (int, np.integer)):
-        idx = int(expdata_raw)
-    elif isinstance(expdata_raw, str):
-        s = expdata_raw.strip()
-        m = re.search(r"dabam2d-(\d+)$", s, flags=re.IGNORECASE)
-        if m:
-            idx = int(m.group(1))
+    if defects_flag != 1 or len(exp_list) == 0:
+        return np.zeros_like(xm)
+
+    # Pad/crop to nb_lenses
+    if len(exp_list) == 1:
+        exp_list *= nb_lenses
+    elif len(exp_list) < nb_lenses:
+        exp_list += [exp_list[-1]] * (nb_lenses - len(exp_list))
+    else:
+        exp_list = exp_list[:nb_lenses]
+
+    # ---------- sim grid & lens disk ----------
+    X_sim = xm[0, :]    # [m]
+    Y_sim = ym[:, 0]    # [m]
+    Rdst  = A_m / 2.0
+    r     = np.sqrt(xm**2 + ym**2)
+    disk_mask = (r <= Rdst)
+
+    # ---------- accumulate resampled RAW maps ----------
+    Zraw_total = np.zeros_like(xm)
+    dabam_sets = []
+    first_Rsrc = None
+    resample_note = None
+
+    for entry in exp_list:
+        # parse index
+        if isinstance(entry, (int, np.integer)):
+            idx = int(entry)
         else:
-            nums = re.findall(r"(\d+)", s)
-            if nums:
-                idx = int(nums[-1])
-
-
-    # concise config line
-    print(
-        "[DABAM] "
-        f"defects={'on' if defects_flag==1 else 'off'} | "
-        f"experimental_data={expdata_raw if expdata_raw is not None else 'n/a'}"
-        f"{f' (idx={idx})' if idx is not None else ''} | "
-        f"defect_type={defect_type} ({_defect_type_label(defect_type)}) | "
-        f"remove_avg_profile={'on' if remove_avg==1 else 'off'} | "
-        f"Custom_zernike={'on' if custom_active else 'off'} | "
-        f"nmodes={nmodes} | startmode={startmode}"
-    )
-
-    # Bail out if not requested
-    if defects_flag != 1:
-        return np.zeros_like(xm)
-
-    if idx is None:
-        print("[DABAM] Could not parse a valid index from 'experimental_data' — no defects applied.")
-        return np.zeros_like(xm)
-
-    # --- Load DABAM map (meters) + metadata
-    X, Y, Z, meta = load_dabam2d(idx)  # Z in meters, shape (Ny, Nx)
-    Ny, Nx = Z.shape
-
-    # ---- Pretty-print metadata block --------------------------------
-    def _coerce_to_float(s):
-        try:
-            return float(str(s))
-        except Exception:
-            return None
-
-    # order a few important keys first, then the rest (non-null only)
-    ordered_keys = [
-        "USER_REFERENCE", "MATERIAL", "FACILITY", "INSTRUMENT",
-        "RS", "RM", "WIDTH", "LENGTH", "FOCUS_DIR", "SCAN_DATE",
-        "YEAR_FABRICATION", "SURFACE_SHAPE", "FUNCTION", "THICK",
-        "SUBSTRATE", "COATING", "POLISHING", "ENVIRONMENT",
-    ]
-    remaining = [k for k in sorted(meta.keys()) if k not in ordered_keys]
-
-    print(f"[DABAM] {elem_name} simulated via {expdata_raw} (idx={idx}) with properties:")
-    for k in ordered_keys + remaining:
-        if k not in meta:
+            s = str(entry).strip()
+            m = re.search(r"dabam2d-([0-9]+)$", s, flags=re.IGNORECASE)
+            if m:
+                idx = int(m.group(1))
+            else:
+                nums = re.findall(r"([0-9]+)", s)
+                idx = int(nums[-1]) if nums else None
+        if idx is None:
+            print(f"[DABAM] Skipping invalid entry: {entry}")
             continue
-        v = meta[k]
-        if v is None or (isinstance(v, str) and v.strip() == ""):
-            continue
-        # pretty units for common metric fields that arrive as strings
-        if k in ("RS", "RM", "WIDTH", "LENGTH", "THICK"):
-            vf = _coerce_to_float(v)
-            if vf is not None:
-                print(f"        {k:<14}: {vf:.6g} m")
-                continue
-        print(f"        {k:<14}: {v}")
 
-    # --- Zernike decomposition --------------------------------------
-    Zcoeffs, Zfit, Zres = wft.fit_zernike_circ(
-        Z, nmodes=nmodes, startmode=startmode, rec_zern=True
+        # load native map
+        X, Y, Z, meta = load_dabam2d(idx)  # Z in meters
+
+        # --- DEBUG / UNIT CHECK ---
+        print(f"[DABAM] idx={idx}, X range={X.min():.3e} to {X.max():.3e}, "
+            f"Y range={Y.min():.3e} to {Y.max():.3e}")
+        
+        # Detect if coordinates are in microns instead of meters
+        if np.abs(X).max() > 1e-3 or np.abs(Y).max() > 1e-3:
+            print(f"[DABAM] Coordinates appear to be in µm for dabam2d-{idx:04d} → converting to meters.")
+            X = X * 1e-6
+            Y = Y * 1e-6
+
+        # native diagnostics (for per-lens rows)
+        Zc, Zfit_i, Zres_i = wft.fit_zernike_circ(Z, nmodes=nmodes, startmode=startmode, rec_zern=True)
+        Zres_i = -Zres_i
+
+        extent_um = [float(X.min()*1e6), float(X.max()*1e6),
+                    float(Y.min()*1e6), float(Y.max()*1e6)]
+        
+        dabam_sets.append({"idx": idx, "Z_raw": Z, "Zfit": Zfit_i, "Zres": Zres_i, "extent_um": extent_um})
+
+        # resample RAW to sim grid
+        Rx = 0.5 * (X.max() - X.min()); Ry = 0.5 * (Y.max() - Y.min())
+        Rsrc = min(Rx, Ry) if (Rx > 0 and Ry > 0) else 1.0
+        if first_Rsrc is None: first_Rsrc = Rsrc
+
+        interp = RegularGridInterpolator((Y, X), Z, bounds_error=False, fill_value=0.0)
+
+        if rescale_flag == 1:
+            scale = Rdst / Rsrc if Rsrc > 0 else 1.0
+            pts = np.column_stack([(ym / scale).ravel(), (xm / scale).ravel()])
+            Z_res = interp(pts).reshape(xm.shape)
+            resample_note = "stretch to fill" if scale > 1 else ("shrink to fill" if scale < 1 else "1:1")
+        else:
+            scale = 1.0
+            pts = np.column_stack([ym.ravel(), xm.ravel()])
+            Z_res = interp(pts).reshape(xm.shape)
+            if Rsrc < Rdst: resample_note = "native smaller than lens (zeros outside)"
+            elif Rsrc > Rdst: resample_note = "native larger than lens (masked at edge)"
+            else: resample_note = "1:1 size (native == lens)"
+
+        # keep only lens disk
+        Z_res = np.where(disk_mask, Z_res, 0.0)
+        Zraw_total += Z_res
+
+
+    # ---------- build tight ROI (crop to lens box) ----------
+    jj, ii = np.where(disk_mask)
+    j0, j1 = jj.min(), jj.max()
+    i0, i1 = ii.min(), ii.max()
+
+    Zraw_roi = Zraw_total[j0:j1+1, i0:i1+1]
+    disk_roi = disk_mask[j0:j1+1, i0:i1+1]
+    X_roi = X_sim[i0:i1+1]
+    Y_roi = Y_sim[j0:j1+1]
+
+    # zero anything outside the disk (safety)
+    Zraw_roi = np.where(disk_roi, Zraw_roi, 0.0)
+
+    # ---------- Zernike fit & residues ONLY on ROI ----------
+    Zc_tot, Zfit_roi, Zres_roi = wft.fit_zernike_circ(
+        Zraw_roi, nmodes=nmodes, startmode=startmode, rec_zern=True
     )
+    Zres_roi = -Zres_roi
+    Zres_roi_pre = Zres_roi.copy()
 
-    el_dict["Z_coeffs_native"]  = np.asarray(Zcoeffs).copy()
-    el_dict["nmodes_used"]      = int(nmodes)
-    el_dict["startmode_used"]   = int(startmode)
+    # --- Custom Zernike overwrite of the ROI fit (applied to TOTAL fit) ---
+    custom_list   = el_dict.get("Custom_zernike", [])
+    custom_active = (isinstance(custom_list, (list, tuple))
+                    and len(custom_list) >= 1 and int(custom_list[0]) == 1)
 
-    Zres = -Zres # The way Zres is defined in fit_zernike_circ is wrong in sign. We refine it such that Z = Zres+Zfit
+    def _center_fit_to_size(arr, out_shape):
+        """Center-crop or center-pad arr to out_shape with zeros."""
+        import numpy as _np
+        ay, ax = arr.shape
+        ty, tx = out_shape
 
-    Zres_unproc = Zres.copy()                    # save before any optional processing
-    el_dict["Z_residues_native_unproc"] = Zres_unproc
+        # center crop if larger
+        if ay > ty:
+            y0 = (ay - ty) // 2
+            arr = arr[y0:y0 + ty, :]
+        if ax > tx:
+            x0 = (ax - tx) // 2
+            arr = arr[:, x0:x0 + tx]
 
-    # --- Optional azimuthal-average removal on residues --------------
-    residues_map = Zres
-    if remove_avg == 1:
-        I_thick_res, R = wft.average_azimuthal(residues_map, X, Y)
-        _, residues_map = wft.remove_avg_profile(residues_map, None, X, Y, I_thick_res, R, 'b')
-    el_dict["remove_avg_applied"] = int(remove_avg == 1)
-    el_dict["Z_residues_native"] = residues_map
+        # center pad if smaller
+        ay, ax = arr.shape
+        py_top  = (ty - ay) // 2
+        py_bot  = (ty - ay) - py_top
+        px_left = (tx - ax) // 2
+        px_right= (tx - ax) - px_left
+        if py_top or py_bot or px_left or px_right:
+            arr = _np.pad(arr, ((py_top, py_bot), (px_left, px_right)),
+                        mode='constant', constant_values=0.0)
+        return arr
 
-
-    # --- Zernike choice logic (custom vs fitted) ---------------------
     if custom_active:
         pairs = list(custom_list[1:])
         if len(pairs) % 2 != 0:
@@ -347,130 +388,117 @@ def build_dabam_defect_thickness_map(el_dict, params, xm, ym, A_m):
         vals  = [float(pairs[i]) for i in range(1, len(pairs), 2)]
         max_n = max(nolls) if nolls else 0
 
+        # Build coefficient vector (meters)
         zvec = np.zeros(max(1, max_n), dtype=float)
         for n, v in zip(nolls, vals):
             zvec[n-1] = v  # Noll indices start at 1
 
-        # prefer odd->even safety to match typical DABAM even sizes
-        rad_px   = (min(Nx, Ny) - 1) // 2
-        Zfit_map = wft.calc_zernike_circ(zvec, rad=rad_px, mask=True)
+        # ► Use the physical lens radius in px, not the LSQ map's size
+        pxsize   = params['pxsize']                  # [m/px]
+        Rdst_px  = int(round((A_m / 2.0) / pxsize))  # lens radius in pixels
+        diam_px  = 2 * Rdst_px + 1                   # target diameter
+
+        # Generate square custom map at exact lens diameter (requested)
+        Zfit_custom_sq = wft.calc_zernike_circ(zvec, rad=Rdst_px, mask=True)
+
+        # --- SAFETY: some implementations clamp 'rad' (e.g. ~100 px).
+        # If the returned disk is smaller than requested, upscale it to 'diam_px'.
+        ret_diam = Zfit_custom_sq.shape[0]
+        if ret_diam != Zfit_custom_sq.shape[1]:
+            raise RuntimeError(f"[CustomZernike] Non-square map returned: {Zfit_custom_sq.shape}")
+
+        if ret_diam < (2*Rdst_px + 1):
+            # Upscale isotropically to the target diameter (linear interpolation)
+            from scipy.ndimage import zoom as _zoom
+            scale = (2*Rdst_px + 1) / float(ret_diam)
+            print(f"[CustomZernike] WARNING: generator returned {ret_diam} px, "
+                f"but target is {2*Rdst_px + 1} px. Upscaling by ×{scale:.3f}.")
+            Zfit_custom_sq = _zoom(Zfit_custom_sq, zoom=scale, order=1, mode="nearest")
+
+        # Normalize to exact (diam_px, diam_px) by center crop/pad
+        Zfit_custom_sq = _center_fit_to_size(Zfit_custom_sq, (diam_px, diam_px))
+
+        print(f"[CustomZernike] pxsize={pxsize*1e6:.3f} µm/px, Rdst={Rdst_px}px "
+            f"(~{Rdst_px*pxsize*1e6:.1f} µm), "
+            f"returned={ret_diam}px, final={Zfit_custom_sq.shape}")
+
+
+        # Now center-fit it into the ROI box (Zraw_roi.shape), then mask by disk
+        ty, tx = Zraw_roi.shape          # ROI tight box size
+        Zfit_custom_roi = _center_fit_to_size(Zfit_custom_sq, (ty, tx))
+        Zfit_custom_roi = np.where(disk_roi, Zfit_custom_roi, 0.0)
+
+        # Overwrite the ROI fit and mark state
+        Zfit_roi = Zfit_custom_roi
+        el_dict["Zfit_is_custom"] = 1
     else:
-        Zfit_map = Zfit  # LSQ fitted Zernike map
-
-    # --- FORCE Zfit_map to match native DABAM size Z.shape (center crop/pad) ---
-    ty, tx = Z.shape
-    ay, ax = Zfit_map.shape
-
-    # center-crop if Zfit_map is larger
-    if ay > ty:
-        y0 = (ay - ty) // 2
-        Zfit_map = Zfit_map[y0:y0 + ty, :]
-    if ax > tx:
-        x0 = (ax - tx) // 2
-        Zfit_map = Zfit_map[:, x0:x0 + tx]
-
-    # recompute after potential crop
-    ay, ax = Zfit_map.shape
-    py_top  = (ty - ay) // 2
-    py_bot  = (ty - ay) - py_top
-    px_left = (tx - ax) // 2
-    px_right= (tx - ax) - px_left
-
-    if py_top or py_bot or px_left or px_right:
-        Zfit_map = np.pad(
-            Zfit_map,
-            ((py_top, py_bot), (px_left, px_right)),
-            mode='constant',
-            constant_values=0.0
-        )
-    # ---------------------------------------------------------------------------
-    # --- after Zfit_map has the same shape as Z (native DABAM grid) ---
-    el_dict["Z_fit_panel_map"]   = Zfit_map.copy()     # what the "Zernike fit" panel should show
-    el_dict["Zfit_is_custom"]    = 1 if custom_active else 0
-    el_dict["dabam_X"]           = X                   # keep coordinates for the plot
-    el_dict["dabam_Y"]           = Y
-    el_dict["Z_raw_native"]      = Z                   # optional: raw map for the panel
-    el_dict["Z_residues_native"] = residues_map        # optional: residues (post-processing if any)
+        el_dict["Zfit_is_custom"] = 0
 
 
-    # --- Compose the defect thickness BEFORE resampling --------------
+
+    if remove_avg == 1:
+        I_thick_res, Rprof = wft.average_azimuthal(Zres_roi, X_roi, Y_roi)
+        _, Zres_roi = wft.remove_avg_profile(Zres_roi, None, X_roi, Y_roi, I_thick_res, Rprof, 'b')
+
+    # ---------- pick final map on ROI, then embed back to full grid ----------
     if defect_type == 1:
-        Z_def_src = Zfit_map
+        Z_final_roi = Zfit_roi
     elif defect_type == 2:
-        Z_def_src = residues_map
-    elif defect_type == 3:
-        Z_def_src = Zfit_map + residues_map
+        Z_final_roi = Zres_roi
     else:
-        print(f"[DABAM] Unknown defect_type={defect_type}, defaulting to Zernike+residues.")
-        Z_def_src = Zfit_map + residues_map
+        Z_final_roi = Zfit_roi + Zres_roi
 
-    # --- Map DABAM -> simulation grid --------------------------------
-    Rx = 0.5 * (X.max() - X.min())
-    Ry = 0.5 * (Y.max() - Y.min())
-    Rsrc  = min(Rx, Ry) if (Rx > 0 and Ry > 0) else 1.0         # DABAM half-size (min axis)
-    Rdst  = A_m / 2.0                                            # simulation lens radius
-    rescale_flag = int(el_dict.get("rescale_dabam", 1))
+    Z_final_full = np.zeros_like(xm)
+    Z_final_full[j0:j1+1, i0:i1+1] = np.where(disk_roi, Z_final_roi, 0.0)
 
-    # build interpolator on native (Y, X) coordinates
-    interp = RegularGridInterpolator((Y, X), Z_def_src, bounds_error=False, fill_value=0.0)
+    # ---------- cache for plotting ----------
+    el_dict["dabam_sets"] = dabam_sets
+    # totals row (left) → full sim extent
+    el_dict["Z_raw_native"] = Zraw_total
+    el_dict["Z_interp_extent_um"] = [X_sim.min()*1e6, X_sim.max()*1e6,
+                                     Y_sim.min()*1e6, Y_sim.max()*1e6]
+    # totals row (center/right) & bottom row → lens-cropped extent
+    el_dict["Z_fit_panel_map"]          = Zfit_roi
+    el_dict["Z_residues_native_unproc"] = Zres_roi_pre
+    el_dict["Z_residues_native"]        = Zres_roi
+    el_dict["Z_coeffs_native"]          = Zc_tot
+    el_dict["Z_fit_axes_um"] = [X_roi.min()*1e6, X_roi.max()*1e6,
+                                Y_roi.min()*1e6, Y_roi.max()*1e6]
 
-    if rescale_flag == 1:
-        # --- RESCALE: stretch/shrink to fill the aperture -------------
-        scale = Rdst / Rsrc if Rsrc > 0 else 1.0
-        pts = np.column_stack([(ym / scale).ravel(), (xm / scale).ravel()])
-        Z_def_resampled = interp(pts).reshape(xm.shape)
+    # final applied map (full grid)
+    el_dict["Z_def_resampled"] = Z_final_full
+    el_dict["Z_total_def_native"]   = Z_final_full
+    el_dict["Z_total_def_extent_um"] = el_dict["Z_interp_extent_um"]
 
-        policy = "rescale: fill aperture"
-        note   = "stretch to fill" if scale > 1 else ("shrink to fill" if scale < 1 else "1:1")
-
-    else:
-        # --- NO RESCALE: sample in native metric coordinates ----------
-        # points are directly the simulation coords (same unit: meters)
-        scale = 1.0
-        pts = np.column_stack([ym.ravel(), xm.ravel()])
-        Z_def_resampled = interp(pts).reshape(xm.shape)
-
-        policy = "no-rescale: keep native size"
-        note   = "DABAM smaller than lens ⇒ zero defects outside" if Rsrc < Rdst else \
-                 ("DABAM larger than lens ⇒ masked at lens edge" if Rsrc > Rdst else "1:1 size")
-
-        # Loud warning if DABAM disk is smaller than lens (you’ll have a “clean” ring)
-        if Rsrc < Rdst:
-            print("="*72)
-            print("[DABAM][WARNING] DABAM radius is SMALLER than the lens radius (no-rescale mode).")
-            print(f"           Rsrc = {Rsrc*1e6:.1f} µm < Rdst = {Rdst*1e6:.1f} µm")
-            print("           Outside the DABAM disk there will be NO defects (zeros).")
-            print("           Set 'rescale_dabam: 1' to fill the whole lens with scaled defects.")
-            print("="*72)
-
-    # Mask outside aperture (always)
-    r = np.sqrt(xm**2 + ym**2)
-    Z_def_resampled[r > Rdst] = 0.0
-
-    # Store for diagnostics (incl. plotting extent and resample meta)
-    el_dict["Z_def_resampled"]    = Z_def_resampled
-    el_dict["Z_interp_extent_um"] = [xm.min()*1e6, xm.max()*1e6, ym.min()*1e6, ym.max()*1e6]
-    el_dict["Z_resample_info"]    = {
-        "policy": policy,
-        "note": note,
+    # resampling info box (based on first map for display)
+    el_dict["Z_resample_info"] = {
+        "policy": ("rescale: fill aperture" if rescale_flag == 1 else "no-rescale: keep native size"),
+        "note": (resample_note or ""),
         "rescale_flag": int(rescale_flag),
-        "Rsrc_um": float(Rsrc*1e6),
+        "Rsrc_um": (float(first_Rsrc*1e6) if first_Rsrc is not None else None),
         "Rdst_um": float(Rdst*1e6),
-        "scale": float(scale),
+        "scale": (float((Rdst/first_Rsrc) if (first_Rsrc and first_Rsrc > 0) else 1.0)),
     }
 
-    # Log what we did
-    print(f"[DABAM] Resample policy: {policy} | {note} "
-          f"| Rsrc={Rsrc*1e6:.1f} µm → Rdst={Rdst*1e6:.1f} µm | scale={scale:.3f}")
+    print(f"[DABAM] Total (resampled) raw: min={Zraw_total.min():.3e} m, "
+          f"max={Zraw_total.max():.3e} m | "
+          f"defect_type={defect_type}, remove_avg={remove_avg} → map built OK.")
+    print(f"[DABAM][resample] policy={el_dict['Z_resample_info']['policy']} | "
+          f"Rsrc={el_dict['Z_resample_info']['Rsrc_um']:.1f} µm → "
+          f"Rdst={el_dict['Z_resample_info']['Rdst_um']:.1f} µm | "
+          f"{el_dict['Z_resample_info']['note']}")
     
-    print(
-        "[DABAM] Radii: "
-        f"Rsrc={Rsrc*1e6:.1f} µm (from DABAM WIDTH/LENGTH), "
-        f"Rdst={Rdst*1e6:.1f} µm (from A/2; A treated as DIAMETER), "
-        f"scale={scale:.3f}, rescale_dabam={rescale_flag}"
-    )
+    print(f"[DABAM][APPLY] Defect type = {defect_type} "
+        f"({'Zfit' if defect_type==1 else 'Zres' if defect_type==2 else 'Zfit+Zres'}) "
+        f"{'with avg-removal' if remove_avg else ''} "
+        f"→ applied map shape = {Z_final_full.shape}")
 
-    return Z_def_resampled
+
+    return Z_final_full
+
+
+
+
 
 
 
@@ -2387,7 +2415,7 @@ def handle_custom_CRL(F: Field,
             el_dict=el_dict, params=params, xm=xm, ym=ym, A_m=A
         )  # thickness delta [m] on (xm, ym) within aperture
 
-        defect_phase_map = nb_lenses * phase_per_m * Z_def  # convert to phase [rad]
+        defect_phase_map = phase_per_m * Z_def  # convert to phase [rad]
         total_phase_map  = ideal_phase_map + defect_phase_map
 
     # ────────────────────────────────────────────────
@@ -2438,44 +2466,55 @@ def handle_custom_CRL(F: Field,
 
         # If any are missing, fall back to recomputing (rare)
         if X is None or Y is None or Zraw is None or Zfit_p is None or Zres is None:
-            # Parse index (same as before)
+            def _parse_one_idx(tok):
+                if isinstance(tok, (int, np.integer)):
+                    return int(tok)
+                if isinstance(tok, str):
+                    s = tok.strip()
+                    m = re.search(r"dabam2d-([0-9]+)$", s, flags=re.IGNORECASE)
+                    if m:
+                        return int(m.group(1))
+                    nums = re.findall(r"([0-9]+)", s)
+                    if nums:
+                        return int(nums[-1])
+                return None
+
             dabam_sel = el_dict.get("experimental_data", None)
             idx = None
-            if isinstance(dabam_sel, (int, np.integer)):
-                idx = int(dabam_sel)
-            elif isinstance(dabam_sel, str):
-                s = dabam_sel.strip()
-                m = re.search(r"dabam2d-(\d+)$", s, flags=re.IGNORECASE)
-                if m:
-                    idx = int(m.group(1))
-                else:
-                    nums = re.findall(r"(\d+)", s)
-                    if nums:
-                        idx = int(nums[-1])
-
-            if idx is not None:
-                X, Y, Zraw, _ = load_dabam2d(idx)
-                nmodes    = int(el_dict.get("nmodes", 37))
-                startmode = int(el_dict.get("startmode", 1))
-
-                # Baseline LSQ fit (only used if we truly missed the cache)
-                Zcoeffs, Zfit_LSQ, Zres = wft.fit_zernike_circ(
-                    Zraw, nmodes=nmodes, startmode=startmode, rec_zern=True
-                )
-                Zres = -Zres
-
-                # Optional removal (for display)
-                remove_avg_flag = int(el_dict.get("remove_avg_profile", 0))
-                if remove_avg_flag == 1:
-                    I_thick_res, R = wft.average_azimuthal(Zres, X, Y)
-                    _, Zres = wft.remove_avg_profile(Zres, None, X, Y, I_thick_res, R, 'b')
-                el_dict["remove_avg_applied"] = remove_avg_flag
-
-                # The “fit” panel falls back to LSQ fit when we don’t have the cache
-                Zfit_p = Zfit_LSQ
+            if isinstance(dabam_sel, (list, tuple)):
+                for item in dabam_sel:
+                    idx = _parse_one_idx(item)
+                    if idx is not None:
+                        print(f"[DABAM][PLOT] Fallback recompute: using first index from list → {idx}")
+                        break
             else:
-                # No index → nothing to plot
+                idx = _parse_one_idx(dabam_sel)
+
+            if idx is None:
+                print("[DABAM][PLOT][SKIP] Could not parse an index from 'experimental_data' "
+                      f"(value={dabam_sel!r}). Skipping DABAM plot for this lens.")
                 return F
+
+            # We have an idx → recompute a standalone fit for display
+            X, Y, Zraw, _ = load_dabam2d(idx)
+            nmodes    = int(el_dict.get("nmodes", 37))
+            startmode = int(el_dict.get("startmode", 1))
+
+            Zcoeffs, Zfit_LSQ, Zres = wft.fit_zernike_circ(
+                Zraw, nmodes=nmodes, startmode=startmode, rec_zern=True
+            )
+            Zres = -Zres
+
+            # Optional removal (for display)
+            remove_avg_flag = int(el_dict.get("remove_avg_profile", 0))
+            if remove_avg_flag == 1:
+                I_thick_res, R = wft.average_azimuthal(Zres, X, Y)
+                _, Zres = wft.remove_avg_profile(Zres, None, X, Y, I_thick_res, R, 'b')
+            el_dict["remove_avg_applied"] = remove_avg_flag
+
+            # The “fit” panel falls back to LSQ fit when we don’t have the cache
+            Zfit_p = Zfit_LSQ
+
 
         # Build label state for the bar plot
         custom_active = (el_dict.get("Zfit_is_custom", 0) == 1)
@@ -2490,28 +2529,362 @@ def handle_custom_CRL(F: Field,
             Zcoeffs, _, _ = wft.fit_zernike_circ(Zraw, nmodes=nmodes, startmode=startmode, rec_zern=True)
 
 
-        plot_dabam_diagnostics(
-            projectdir=projectdir,
-            el_dict=el_dict,
-            X=X, Y=Y,
-            Z_raw=Zraw,
-            Zfit=Zfit_p,            # custom or LSQ (panel)
-            Zres=Zres,              # post-processed residues (panel)
-            Zcoeffs=np.asarray(Zcoeffs),
-            Zres_unproc=el_dict.get("Z_residues_native_unproc"),
-            custom_active=custom_active,
-            custom_pairs=custom_pairs,
-            nmodes=int(el_dict.get("nmodes", 37)),
-            startmode=int(el_dict.get("startmode", 1)),
-            filename_stem=stem,
-            save_dir=save_dir,
-            sim_name=sim_name,    
-            lens_name=lens_name      
-        )
+        # --- robustly retrieve dabam_sets and always call the stack plot ---
+        dabam_sets = el_dict.get("dabam_sets", [])
+        def _looks_like_dabam_list(v):
+            try:
+                return (isinstance(v, list)
+                        and len(v) >= 1
+                        and isinstance(v[0], dict)
+                        and {"Z_raw", "Zfit", "Zres"}.issubset(set(v[0].keys())))
+            except Exception:
+                return False
 
+        # If empty, scan other keys (in case the builder stored under another name)
+        if not dabam_sets:
+            for k, v in el_dict.items():
+                if _looks_like_dabam_list(v):
+                    print(f"[DABAM][RESOLVE] Found dabam_sets under el_dict['{k}'] (len={len(v)})")
+                    dabam_sets = v
+                    break
+
+        # Log what we found
+        try:
+            lens_name = el_dict.get("element_name") or el_dict.get("name") or el_dict.get("label") or "Lens"
+            print(f"[DABAM][DIAG] lens={lens_name} | type(dabam_sets)={type(dabam_sets)} "
+                f"| len={len(dabam_sets) if hasattr(dabam_sets,'__len__') else 'n/a'}")
+            if isinstance(dabam_sets, list) and dabam_sets:
+                print(f"[DABAM][DIAG] first-set keys: {list(dabam_sets[0].keys())}")
+        except Exception as exc:   # ← renamed here
+            print(f"[DABAM][DIAG][WARN] logging dabam_sets failed: {exc}")
+
+        # Always call the stack plot (it prints how many maps it got and still saves totals even if 0/1)
+        try:
+            print(f"[PLOT][CALL] Invoking plot_dabam_stack_diagnostics for lens={lens_name}")
+            plot_dabam_stack_diagnostics(
+                projectdir=projectdir,
+                el_dict=el_dict,
+                dabam_sets=dabam_sets,
+                filename_stem=stem,
+                save_dir=save_dir,
+                sim_name=sim_name,
+                lens_name=lens_name,
+                totals_vmin=None,
+                totals_vmax=None,
+            )
+            print(f"[PLOT][DONE] plot_dabam_stack_diagnostics finished for {lens_name}")
+        except Exception as exc:   # ← and here
+            print(f"[PLOT][EXC] plot call failed for {lens_name}: {exc}")
+
+        # 2b) Bars-only Zernike figure
+        try:
+            plot_zernike_bars(
+                projectdir=projectdir,
+                el_dict=el_dict,
+                filename_stem=stem,      # gives: LP_610_CRL4b_ZernikePolynoms.png
+                save_dir=save_dir,
+                sim_name=sim_name,
+                lens_name=lens_name,
+                nmodes=int(el_dict.get("nmodes", 37)),
+                startmode=int(el_dict.get("startmode", 1)),
+            )
+        except Exception as exc:
+            print(f"[ZERNIKE][EXC] plot_zernike_bars failed: {exc}")
 
 
     return F
+
+
+
+def plot_dabam_stack_diagnostics(projectdir, el_dict, dabam_sets,
+                                 filename_stem, save_dir, sim_name, lens_name,
+                                 totals_vmin=None, totals_vmax=None):
+    """
+    Plots per-map (raw/fit/res) rows + a totals row (raw/fit/res-pre) +
+    bottom row (residues avg-removed, total map used).
+    - Uses per-map physical extents when available (extent_um in dabam_sets items).
+    - Highlights the panel actually used for the simulation.
+    - Saves robustly with try/except.
+    - Optional fixed color limits on TOTALS row via totals_vmin/vmax (µm units).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle
+    from pathlib import Path
+
+    print(f"[DEBUG] Entering plot_dabam_stack_diagnostics for {lens_name}")
+    print(f"[DEBUG] → {len(dabam_sets)} DABAM map(s) found.")
+
+    defect_type = int(el_dict.get("defect_type", 3))
+    remove_avg  = int(el_dict.get("remove_avg_profile", 0))
+    custom_list = el_dict.get("Custom_zernike", [])
+    custom_active = (isinstance(custom_list, (list, tuple))
+                     and len(custom_list) >= 1 and int(custom_list[0]) == 1)
+
+    # ---- cached totals from builder ----
+    Zraw_tot  = el_dict["Z_raw_native"]               # full-grid (interpolated & summed)
+    Zfit_tot  = el_dict["Z_fit_panel_map"]            # lens-cropped fit (ROI)
+    Zres_post = el_dict["Z_residues_native"]          # lens-cropped, after avg-removal if enabled
+    Zres_pre  = el_dict.get("Z_residues_native_unproc", None)
+    if Zres_pre is None:
+        # fall back safely if missing (avoid shape mismatch)
+        if Zraw_tot.shape == Zfit_tot.shape:
+            Zres_pre = Zraw_tot - Zfit_tot
+        else:
+            print("[DABAM][plot] WARNING: 'Z_residues_native_unproc' missing and shapes differ "
+                  f"(Zraw_tot={Zraw_tot.shape}, Zfit_tot={Zfit_tot.shape}). Using zeros.")
+            Zres_pre = np.zeros_like(Zfit_tot)
+
+    Ztot_avg = Zfit_tot + Zres_post
+
+    # ---- extents ----
+    extent_fit = el_dict.get("Z_fit_axes_um", None)         # ROI axes (µm) for fit/res on totals
+    ext_total_full = el_dict.get("Z_interp_extent_um", None)  # sim grid full extent (µm)
+
+    # ---- layout ----
+    nrows = len(dabam_sets) + 2   # per-map rows + totals + bottom row
+    fig, axes = plt.subplots(nrows, 3, figsize=(12, 3.5*nrows))
+    cmap = "GnBu"
+
+    def label_defect_type(v: int) -> str:
+        return "Zernike only" if v == 1 else ("Residues only" if v == 2 else
+               ("Zernike + residues" if v == 3 else f"Unknown ({v})"))
+
+    def emphasize(ax, extra=" (used for simulation)"):
+        ax.set_title(ax.get_title() + extra, color="red", fontweight="bold")
+        for s in ax.spines.values():
+            s.set_edgecolor("red")
+            s.set_linewidth(2)
+
+    # ---- per-map rows (native extents) ----
+    for i, d in enumerate(dabam_sets):
+        ext = d.get("extent_um", None)
+        print(f"[DEBUG] Map {i}: idx={d.get('idx')} | extent={ext}")
+        for j, (lbl, arr) in enumerate(zip(
+            ["Raw", "Zernike fit", "Residues"],
+            [d["Z_raw"], d["Zfit"], d["Zres"]]
+        )):
+            ax = axes[i, j]
+            im = ax.imshow(arr * 1e6, origin="lower", cmap=cmap,
+                           extent=(ext if ext else None))
+            ax.set_title(f"{lbl} — dabam2d-{d['idx']:04d}")
+            if ext:
+                ax.set_xlabel("x [µm]"); ax.set_ylabel("y [µm]")
+            fig.colorbar(im, ax=ax, fraction=0.046)
+
+    print(f"[DEBUG] Creating totals row: Zraw_tot={Zraw_tot.shape}, Zfit_tot={Zfit_tot.shape}, Zres_pre={Zres_pre.shape}")
+
+    # ---- totals row (single pass, keep handles) ----
+    row_tot = len(dabam_sets)
+    tot_defs = [
+        ("Total raw (interpolated) [µm]", Zraw_tot, ext_total_full),
+        ("Total fit",                      Zfit_tot, extent_fit),
+        ("Total residues (pre-remove)",    Zres_pre, extent_fit),
+    ]
+    tot_axes = []
+    for j, (lbl, arr, ext) in enumerate(tot_defs):
+        ax = axes[row_tot, j]
+        im = ax.imshow(arr * 1e6, origin="lower", cmap=cmap,
+                       extent=(ext if ext else None),
+                       vmin=(totals_vmin if totals_vmin is not None else None),
+                       vmax=(totals_vmax if totals_vmax is not None else None))
+        ax.set_title(lbl)
+        if ext:
+            ax.set_xlabel("x [µm]"); ax.set_ylabel("y [µm]")
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        tot_axes.append(ax)
+
+    # annotate totals[0] (Total raw) with lens outline and resample info
+    ax0 = tot_axes[0]
+    res_info = el_dict.get("Z_resample_info", None)
+    Rdst_um  = (res_info or {}).get("Rdst_um")
+    if Rdst_um is None and el_dict.get("A") is not None:
+        Rdst_um = el_dict["A"] * 1e6 / 2.0
+    if Rdst_um:
+        ax0.add_patch(Circle((0, 0), Rdst_um, edgecolor='white', facecolor='none',
+                             linewidth=1.2, linestyle='--', alpha=0.9))
+        ax0.text(0.05, 0.06, f"Lens Ø ≈ {2*Rdst_um:.1f} µm",
+                 transform=ax0.transAxes, ha='left', va='bottom', fontsize=9,
+                 color='white', bbox=dict(boxstyle='round', facecolor='black',
+                 alpha=0.35, linewidth=0))
+    if res_info:
+        ax0.text(0.02, 0.98,
+                 (f"{res_info.get('policy','')}\n"
+                  f"Rsrc={res_info.get('Rsrc_um',0):.1f} µm → "
+                  f"Rdst={res_info.get('Rdst_um',0):.1f} µm\n"
+                  f"{res_info.get('note','')}"),
+                 transform=ax0.transAxes, ha='left', va='top', fontsize=9,
+                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, linewidth=0))
+
+    # ---- bottom row (residues avg-removed + total map used) ----
+    row_bot = row_tot + 1
+
+    axb0 = axes[row_bot, 0]
+    imR = axb0.imshow(Zres_post * 1e6, origin="lower", cmap=cmap,
+                      extent=(extent_fit if extent_fit else None))
+    axb0.set_title("Residues (avg-removed) [µm]")
+    fig.colorbar(imR, ax=axb0, fraction=0.046)
+
+    axb1 = axes[row_bot, 1]
+    imT = axb1.imshow((Zfit_tot + Zres_post) * 1e6, origin="lower", cmap=cmap,
+                      extent=(extent_fit if extent_fit else None))
+    axb1.set_title("Total map = Zfit + Residues(avg-removed) [µm]")
+    fig.colorbar(imT, ax=axb1, fraction=0.046)
+
+    axes[row_bot, 2].axis("off")
+
+    # ---- highlight the map used for the simulation ----
+    used_ax = None
+    if defect_type == 1:
+        # Zernike only
+        used_ax = tot_axes[1]                          # "Total fit"
+    elif defect_type == 2:
+        # Residues only
+        used_ax = (axb0 if remove_avg else tot_axes[2])  # avg-removed vs pre-remove
+    else:
+        # defect_type == 3 → Zernike + residues
+        used_ax = axb1                                 # "Total map = Zfit + Residues(...)"
+
+    emphasize(used_ax)
+
+
+    # ---- global title ----
+    defects_flag = int(el_dict.get("defects", 0))
+    summary = (f"defects={defects_flag} | "
+               f"type={label_defect_type(defect_type)} | "
+               f"remove_avg_profile={remove_avg} | "
+               f"custom_zernike={'on' if custom_active else 'off'}")
+    fig.suptitle(f"{sim_name}, {lens_name}, Defects — {summary}", fontsize=13)
+
+    # ---- save robustly ----
+    try:
+        plt.tight_layout()
+        Path(save_dir, "Lens_diags").mkdir(parents=True, exist_ok=True)
+        out = Path(save_dir, "Lens_diags", f"{filename_stem}_defects_stack.png")
+        print(f"[DEBUG] Attempting to save plot to {out}")
+        plt.savefig(out, dpi=220, bbox_inches="tight")
+        print(f"[PLOT] Saved defects stack → {out}")
+    except Exception as e:
+        print(f"[PLOT][ERROR] while saving defects stack: {e}")
+    finally:
+        plt.close(fig)
+
+
+
+
+
+def plot_zernike_bars(projectdir,
+                      el_dict,
+                      filename_stem: str,
+                      save_dir,
+                      sim_name: str,
+                      lens_name: str,
+                      nmodes: int | None = None,
+                      startmode: int | None = None):
+    """
+    Bars-only Zernike figure.
+    If Custom_zernike is ON, plots ONLY the custom pairs (overwriting the fit in the sim logic).
+    Otherwise, plots the LSQ-fit coefficients stored in el_dict['Z_coeffs_native'].
+    Saves to .../Lens_diags/{filename_stem}_ZernikePolynoms.png
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+
+    # Zernike name map (Noll) — keep in sync with your module-level dict
+    ZERN_NOLL = {
+        1:(0,0,"Piston"),2:(1,-1,"Tilt X (horizontal)"),3:(1,1,"Tilt Y (vertical)"),
+        4:(2,0,"Defocus"),5:(2,-2,"Primary astigmatism (oblique)"),
+        6:(2,2,"Primary astigmatism (vertical)"),7:(3,-1,"Primary coma X (horizontal)"),
+        8:(3,1,"Primary coma Y (vertical)"),9:(3,-3,"Trefoil (vertical)"),
+        10:(3,3,"Trefoil (oblique)"),11:(4,0,"Primary spherical"),
+        12:(4,-2,"Secondary astigmatism (vertical)"),13:(4,2,"Secondary astigmatism (oblique)"),
+        14:(4,-4,"Quadrafoil (vertical)"),15:(4,4,"Quadrafoil (oblique)"),
+        16:(5,-1,"Secondary coma X (horizontal)"),17:(5,1,"Secondary coma Y (vertical)"),
+        18:(5,-3,"Secondary trefoil (oblique)"),19:(5,3,"Secondary trefoil (vertical)"),
+        20:(5,-5,"Pentafoil (oblique)"),21:(5,5,"Pentafoil (vertical)"),
+        22:(6,0,"Secondary spherical"),23:(6,-2,"Tertiary astigmatism (vertical)"),
+        24:(6,2,"Tertiary astigmatism (oblique)"),25:(6,-4,"Secondary quadrafoil (vertical)"),
+        26:(6,4,"Secondary quadrafoil (oblique)"),27:(6,-6,"Hexafoil (vertical)"),
+        28:(6,6,"Hexafoil (oblique)"),29:(7,-1,"Tertiary coma X (horizontal)"),
+        30:(7,1,"Tertiary coma Y (vertical)"),31:(7,-3,"Tertiary trefoil (oblique)"),
+        32:(7,3,"Tertiary trefoil (vertical)"),33:(7,-5,"Secondary pentafoil (oblique)"),
+        34:(7,5,"Secondary pentafoil (vertical)"),35:(7,-7,"Heptafoil (oblique)"),
+        36:(7,7,"Heptafoil (vertical)"),37:(8,0,"Tertiary spherical"),
+    }
+
+    # Determine what to plot
+    custom_list = el_dict.get("Custom_zernike", [])
+    custom_active = (isinstance(custom_list, (list, tuple))
+                     and len(custom_list) >= 1 and int(custom_list[0]) == 1)
+
+    if custom_active:
+        pairs = list(custom_list[1:])
+        if len(pairs) % 2 != 0:
+            raise ValueError("Custom_zernike must contain pairs: [1, n1, v1, n2, v2, ...]")
+        js = [int(pairs[i])   for i in range(0, len(pairs), 2)]
+        vals_m = [float(pairs[i]) for i in range(1, len(pairs), 2)]
+        title_bar = "Custom Zernike amplitudes (applied to total-fit map)"
+    else:
+        Zcoeffs = el_dict.get("Z_coeffs_native", None)
+        if Zcoeffs is None:
+            print("[ZERNIKE][WARN] Z_coeffs_native not cached; skipping bars.")
+            return
+        Zcoeffs = np.asarray(Zcoeffs).ravel()
+        nmodes = int(nmodes if nmodes is not None else el_dict.get("nmodes", 37))
+        startmode = int(startmode if startmode is not None else el_dict.get("startmode", 1))
+        jmax = min(startmode + nmodes - 1, len(Zcoeffs))
+        js = list(range(startmode, jmax + 1))
+        vals_m = [float(Zcoeffs[j-1]) for j in js]
+        title_bar = f"Zernike decomposition (modes {startmode}–{jmax})"
+
+    # Prepare labels and values in µm
+    vals_um = [v * 1e6 for v in vals_m]
+    labels = []
+    for j in js:
+        nm = ZERN_NOLL.get(j)
+        if nm is None:
+            labels.append(f"$Z_{{{j}}}$")
+        else:
+            n, m, name = nm
+            labels.append(f"$Z_{{{j}}}$ $Z_{{{n}}}^{{{m}}}$\n{name}")
+
+    # Figure sizing
+    n = len(js)
+    width = max(10.0, 0.38 * n + 4.0)   # scale with number of bars
+    fig, ax = plt.subplots(figsize=(width, 5.0), dpi=140)
+
+    # grid lines behind bars
+    for x in range(n):
+        ax.axvline(x, color='gray', linestyle='-', linewidth=0.5, alpha=0.2, zorder=0)
+
+    ax.bar(range(n), vals_um, zorder=2)
+    ax.set_xticks(range(n), labels, rotation=90, ha='center', va='top')
+    ax.set_ylabel("Thickness defect [µm]")
+    ax.set_title(title_bar)
+    ax.tick_params(axis='x', labelsize=8)
+    ax.grid(axis='y', alpha=0.25)
+
+    # Figure title & save
+    summary = (
+        f"defects={int(el_dict.get('defects',0))} | "
+        f"type={int(el_dict.get('defect_type',3))} | "
+        f"remove_avg={int(el_dict.get('remove_avg_profile',0))} | "
+        f"custom_zernike={'on' if custom_active else 'off'}"
+    )
+    fig.suptitle(f"{sim_name}, {lens_name} — {summary}", fontsize=11, y=1.02)
+
+    outdir = Path(save_dir or projectdir) / "Lens_diags"
+    outdir.mkdir(parents=True, exist_ok=True)
+    out = outdir / f"{filename_stem}_ZernikePolynoms.png"
+    plt.tight_layout()
+    plt.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[ZERNIKE] Saved bars → {out}")
+
+
+
+
 
 
 # ----------------- Zernike name map (Noll) -----------------
@@ -2644,222 +3017,6 @@ def plot_custom_crl_ideal(projectdir: Path,
     stem = (filename_stem or "Lens_CRL_cut")
     out = save_dir / f"{stem}_ideal.png"
     plt.savefig(out, dpi=300); plt.close(fig)
-
-
-# ---------- Image 2: DABAM diagnostics ----------
-
-
-
-def plot_dabam_diagnostics(projectdir: Path,
-                           el_dict: dict,
-                           X: np.ndarray, Y: np.ndarray,
-                           Z_raw: np.ndarray, Zfit: np.ndarray, Zres: np.ndarray,
-                           Zcoeffs: np.ndarray,
-                           Zres_unproc: Optional[np.ndarray] = None,
-                           custom_active: bool = False,
-                           custom_pairs: list[int | float] = None,
-                           nmodes: int = 37, startmode: int = 1,
-                           filename_stem: str | None = None,
-                           save_dir: Path | None = None,
-                           sim_name: str | None = None,
-                           lens_name: str | None = None):
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from matplotlib.patches import Circle
-
-
-    # what to show in the bar plot
-    if custom_active:
-        nolls = [int(custom_pairs[i]) for i in range(0, len(custom_pairs), 2)]
-        vals  = [float(custom_pairs[i]) for i in range(1, len(custom_pairs), 2)]
-        show_pairs = list(zip(nolls, vals))
-        title_bar = "Custom Zernike amplitudes"
-    else:
-        # display up to the 37th Zernike (or fewer if nmodes < 37)
-        j0 = startmode
-        jmax = min(j0 + 37, len(Zcoeffs) + 1)
-        show_pairs = [(j, Zcoeffs[j - 1]) for j in range(j0, jmax)]
-        title_bar = f"Zernike decomposition (up to mode {jmax - 1})"
-
-    # convert to µm for images
-    Zraw_um = Z_raw * 1e6
-    Zfit_um = Zfit * 1e6
-    Zres_um = Zres * 1e6
-    Zunproc_um = (Zres_unproc if Zres_unproc is not None else (Z_raw - Zfit)) * 1e6
-
-    XX, YY = np.meshgrid(X * 1e6, Y * 1e6)
-    extent_um = [X.min() * 1e6, X.max() * 1e6, Y.min() * 1e6, Y.max() * 1e6]
-
-    # optional interpolation map (resampled to same grid as used in simulation)
-    # NOTE: only available if we had to interpolate previously
-    Zinterp = None
-    if "Z_def_resampled" in el_dict:
-        Zinterp = el_dict["Z_def_resampled"] * 1e6  # µm
-
-    interp_extent = el_dict.get("Z_interp_extent_um", None)
-    resample_info = el_dict.get("Z_resample_info", None)
-
-    # build parameter summary
-    defects_flag = int(el_dict.get("defects", 0))
-    defect_type  = int(el_dict.get("defect_type", 3))
-    remove_avg   = int(el_dict.get("remove_avg_applied",
-                                el_dict.get("remove_avg_profile", 0)))
-    expdata      = el_dict.get("experimental_data", "n/a")
-
-    summary = (f"defects={defects_flag} | data={expdata} | "
-            f"type={_defect_type_label(defect_type)} | "
-            f"remove_avg_profile={remove_avg} | "
-            f"custom_zernike={'on' if custom_active else 'off'}")
-
-    # --- Figure layout: 2x2 + 1 wide bar chart, or 2x3 if interpolation map available
-    if Zinterp is not None:
-        fig = plt.figure(figsize=(16, 10), dpi=120)
-        gs = fig.add_gridspec(3, 4, height_ratios=[1, 1, 0.8], hspace=0.35, wspace=0.25)
-        ax0 = fig.add_subplot(gs[0, 0])
-        ax1 = fig.add_subplot(gs[0, 1])
-        ax2 = fig.add_subplot(gs[0, 2])
-        ax3 = fig.add_subplot(gs[0, 3])
-        ax4 = fig.add_subplot(gs[1, :])  # full-width residues (post-processed)
-        ax5 = fig.add_subplot(gs[2, :])  # full-width Zernike bars
-    else:
-        fig = plt.figure(figsize=(14, 9), dpi=120)
-        gs = fig.add_gridspec(3, 3, height_ratios=[1, 1, 0.8], hspace=0.35, wspace=0.25)
-        ax0 = fig.add_subplot(gs[0, 0])
-        ax1 = fig.add_subplot(gs[0, 1])
-        ax2 = fig.add_subplot(gs[0, 2])
-        ax3 = fig.add_subplot(gs[1, :])
-        ax4 = fig.add_subplot(gs[2, :])
-        ax5 = None
-
-    # ----------- PLOTS (using colormap='GnBu') --------------------
-    cmap = "GnBu"
-
-    im0 = ax0.imshow(Zraw_um, extent=extent_um, origin='lower', cmap=cmap)
-    ax0.set(title="Raw DABAM surface [µm]", xlabel="x [µm]", ylabel="y [µm]")
-    fig.colorbar(im0, ax=ax0, fraction=0.046)
-
-    im1 = ax1.imshow(Zfit_um, extent=extent_um, origin='lower', cmap=cmap)
-    ax1.set(title="Zernike fit [µm]", xlabel="x [µm]", ylabel="y [µm]")
-    fig.colorbar(im1, ax=ax1, fraction=0.046)
-
-    # --- CHANGED TITLE HERE ---
-    im2 = ax2.imshow(Zunproc_um, extent=extent_um, origin='lower', cmap=cmap,vmin=-5, vmax=5)
-    ax2.set(title="Residues (not processed) [µm]", xlabel="x [µm]", ylabel="y [µm]")
-    fig.colorbar(im2, ax=ax2, fraction=0.046)
-
-    # --- RESIDUES POST-PROCESSING ---
-    im3 = ax3.imshow(Zres_um, extent=extent_um, origin='lower', cmap=cmap,vmin=-5, vmax=5)
-    ax3.set(title="Residues (post processing) [µm]", xlabel="x [µm]", ylabel="y [µm]")
-    fig.colorbar(im3, ax=ax3, fraction=0.046)
-
-    # --- OPTIONAL INTERPOLATED MAP (new subplot) ---
-    if Zinterp is not None and ax5 is not None:
-        im4 = ax4.imshow(
-            Zinterp,
-            extent=(interp_extent if interp_extent is not None else extent_um),
-            origin='lower',
-            cmap=cmap
-        )
-        ax4.set(title="Resampled (interpolated) map [µm]", xlabel="x [µm]", ylabel="y [µm]")
-        fig.colorbar(im4, ax=ax4, fraction=0.046)
-
-        # === NEW: draw a circle for the lens DIAMETER (i.e., radius = A/2) ===
-        # Prefer the radius computed by the builder; otherwise derive from YAML A
-        Rdst_um = None
-        if resample_info is not None:
-            Rdst_um = resample_info.get("Rdst_um", None)
-        if Rdst_um is None:
-            A = el_dict.get("A", None)        # A is DIAMETER in your code
-            if A is not None:
-                Rdst_um = float(A * 1e6 / 2.0)
-        if Rdst_um is not None:
-            from matplotlib.patches import Circle
-            lens_circle = Circle((0.0, 0.0), Rdst_um,
-                                edgecolor='white', facecolor='none',
-                                linewidth=1.4, alpha=0.95,linestyle='--')
-            ax4.add_patch(lens_circle)
-            # optional: label
-            ax4.text(0.02, 0.02, f"Lens Ø ≈ {2*Rdst_um:.1f} µm",
-                    transform=ax4.transAxes, ha='left', va='bottom',
-                    fontsize=9, color='white',
-                    bbox=dict(boxstyle='round', facecolor='black', alpha=0.35, linewidth=0))
-
-        # annotate resampling policy & sizes (you already had this)
-        if resample_info is not None:
-            ax4.text(
-                0.02, 0.98,
-                (f"{resample_info.get('policy','')}\n"
-                f"Rsrc={resample_info.get('Rsrc_um',0):.1f} µm → "
-                f"Rdst={resample_info.get('Rdst_um',0):.1f} µm\n"
-                f"{resample_info.get('note','')}"),
-                transform=ax4.transAxes,
-                ha='left', va='top',
-                fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, linewidth=0)
-            )
-
-        bar_ax = ax5
-    else:
-        # <<< add this so bar_ax is always defined >>>
-        bar_ax = ax4
-
-
-
-    # ----------- BAR CHART (Zernike decomposition) ----------------
-    js   = [j for j, _ in show_pairs]
-    vals = [v * 1e6 for _, v in show_pairs]  # µm
-
-    labels = []
-    for j in js:
-        nm = ZERN_NOLL.get(j)  # -> (n, m, name) or None
-        if nm is None:
-            labels.append(f"$Z_{{{j}}}$")
-        else:
-            n, m, name = nm
-            # two lines: top "Z_j  Z_n^m" (MathText), bottom the name
-            labels.append(f"$Z_{{{j}}}$ $Z_{{{n}}}^{{{m}}}$\n{name}")
-
-
-    # --- vertical lines behind bars ---
-    for x in range(len(js)):
-        bar_ax.axvline(x, color='gray', linestyle='-', linewidth=0.5, alpha=0.2, zorder=0)
-
-    # --- bar plot (zorder>0 so it stays on top of the grid lines) ---
-    bar_ax.bar(range(len(js)), vals, color="#2c7fb8", zorder=2)
-
-    bar_ax.bar(range(len(js)), vals, color="#2c7fb8")
-    bar_ax.set_xticks(range(len(js)), labels, rotation=90, ha='center', va='top')
-    bar_ax.set_ylabel("Thickness defect [µm]")
-    bar_ax.set_title(title_bar)
-    bar_ax.tick_params(axis='x', labelsize=8)
-
-
-    # ----------- TITLE & SAVE ------------------------
-    lens_name = (lens_name
-                 or el_dict.get("element_name")
-                 or el_dict.get("name")
-                 or el_dict.get("label")
-                 or "Lens")
-    sim_name  = (sim_name
-                 or el_dict.get("sim_name")
-                 or el_dict.get("filename")
-                 or el_dict.get("simulation_name")
-                 or Path(projectdir).stem)
-
-    fig.suptitle(f"{sim_name}, {lens_name}, {summary}", fontsize=13)
-
-    fig.subplots_adjust(bottom=0.25, top=0.93, hspace=0.5)
-
-    if save_dir is None:
-        save_dir = Path(projectdir)
-    save_dir = save_dir / "Lens_diags"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    stem = (filename_stem or "Lens_DABAM")
-    out = save_dir / f"{stem}_defects.png"
-    plt.savefig(out, dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 

@@ -15,16 +15,19 @@ CRL4a:
   in: 1
   position: -1.215
   type: Custom_CRL
-  ROC: 200.0e-6   # Radius of curvature in [m]
-  L: 0.9e-3      # Total mechanical lens thickness [m]
-  A: 850.0e-6    # Geometric aperture radius [m]
+  ROC: 30.0e-6   # Radius of curvature in [m]
+  L: 2.6e-3      # Total mechanical lens thickness [m]
+  A: 200.0e-6    # Geometric aperture radius [m]
   #focal_lenght_stack: 2.0
   nb_lenses: 3. # Number of lenses
   lens_material: diamond
   add_aperture: 1
   defects: 1     # Adding defects to the lens [0 or 1]
-  experimental_data: dabam2d-0021     # Name of the data used in DABAM
-  rescale_dabam: 1  # [0] : no rescaling of the dabam map (be careful the the dabam map be larger than the simulation lens!) [1] : rescaling of the dabam map to match the lens size.
+  experimental_data:
+  - dabam2d-0073     # Name of the data used in DABAM
+  - dabam2d-0084     # Name of the data used in DABAM
+  - dabam2d-0079     # Name of the data used in DABAM
+  rescale_dabam: 0  # [0] : no rescaling of the dabam map (be careful the the dabam map be larger than the simulation lens!) [1] : rescaling of the dabam map to match the lens size.
   defect_type: 1            # 1 = Zernike only, 2 = residues only, 3 = full (fit+res)
   remove_avg_profile: 0     # run average_azimuthal/remove_avg_profile on residues
   Custom_zernike:
@@ -57,22 +60,28 @@ CRL4b:
   in: 1
   position: 2.422
   type: Custom_CRL
-  ROC: 125.0e-6   # Radius of curvature in [m]
-  L: 0.5e-3      # Total mechanical lens thickness [m]
-  A: 475.0e-6    # Geometric aperture radius [m]
+  ROC: 30.0e-6   # Radius of curvature in [m]
+  L: 2.6e-3      # Total mechanical lens thickness [m]
+  A: 200.0e-6    # Geometric aperture radius [m]
   #focal_lenght_stack: 2.0
-  nb_lenses: 5. # Number of lenses
+  nb_lenses: 3. # Number of lenses
   lens_material: diamond
   add_aperture: 1
   defects: 1     # Adding defects to the lens [0 or 1]
-  experimental_data: dabam2d-0073     # Name of the data used in DABAM
-  rescale_dabam: 1  # [0] : no rescaling of the dabam map (be careful the the dabam map be larger than the simulation lens!) [1] : rescaling of the dabam map to match the lens size.
-  defect_type: 1            # 1 = Zernike only, 2 = residues only, 3 = full (fit+res)
-  remove_avg_profile: 0     # run average_azimuthal/remove_avg_profile on residues
+  experimental_data: 
+  - dabam2d-0073     # Name of the data used in DABAM
+  - dabam2d-0084     # Name of the data used in DABAM
+  - dabam2d-0079     # Name of the data used in DABAM
+  rescale_dabam: 0  # [0] : no rescaling of the dabam map (be careful the the dabam map be larger than the simulation lens!) [1] : rescaling of the dabam map to match the lens size.
+  defect_type: 3            # 1 = Zernike only, 2 = residues only, 3 = full (fit+res)
+  remove_avg_profile: 1     # run average_azimuthal/remove_avg_profile on residues
   Custom_zernike:
-    - 0                     # activate
+    - 1                     # activate
     - 11                     # Noll n=7
     - 1.5e-6                  # amplitude [m]
+    - 18                     # Noll n=7
+    - -4.5e-6                  # amplitude [m]
+
 
 PH:
   in: 1
